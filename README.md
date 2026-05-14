@@ -2,6 +2,7 @@
 
 ## Requirements
 
+```
 ros-noetic-turtlebot3
 ros-noetic-turtlebot3-msgs
 ros-noetic-turtlebot3-simulations
@@ -9,6 +10,7 @@ ros-noetic-gazebo-ros-pkgs
 ros-noetic-gazebo-ros-control
 ros-noetic-teleop-twist-keyboard
 ros-noetic-tf ros-noetic-tf2
+```
 
 ## Setup instructions
 
@@ -105,7 +107,11 @@ roslaunch game_theory_sim game_theory.launch
 ## Contributors
 
 Giovanni Masi
+
 Pierfilippo Orsini
+
 Federico Melizza
+
 Riccardo Landi
+
 Alessandro Salomone
