@@ -1,0 +1,8 @@
+prefix=/root/ros1_ws/devel/.private/game_theory_sim
+
+Name: game_theory_sim
+Description: Description of game_theory_sim
+Version: 0.0.0
+Cflags: 
+Libs: -L${prefix}/lib 
+Requires: 

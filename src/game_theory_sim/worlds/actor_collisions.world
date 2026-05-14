@@ -1,0 +1,223 @@
+<?xml version="1.0" ?>
+<sdf version="1.6">
+  <world name="default">
+    <gui fullscreen='0'>
+      <camera name='user_camera'>
+        <!-- Z=10 (altezza), Pitch=1.5708 (90 gradi in basso) -->
+        <pose>0 0 10 0 1.5708 1.5708</pose>
+        <view_controller>orbit</view_controller>
+        <projection_type>orthographic</projection_type>
+      </camera>
+    </gui>
+
+    <include>
+      <uri>model://sun</uri>
+    </include>
+    <include>
+      <uri>model://ground_plane</uri>
+    </include>
+
+
+    <!-- Definizione dell'Attore -->
+    <actor name="actor">
+      <!-- Skin e animazione base (inclusi di default in Gazebo) -->
+      <skin>
+        <filename>walk.dae</filename>
+	<scale>1.0</scale>
+      </skin>
+      <animation name="walking">
+        <filename>walk.dae</filename>
+        <scale>1.0</scale>
+	<interpolate_x>true</interpolate_x>
+      </animation>
+
+      <script>
+        <loop>true</loop>
+        <delay_start>0.000000</delay_start>
+        <auto_start>true</auto_start>
+        <trajectory id="0" type="walking">
+          <!-- Partenza angolo in basso a sinistra (x=-8, y=-8), guarda verso l'alto (yaw=1.57) -->
+          <waypoint><time>0.0</time><pose>-8 -8 0 0 0 1.57</pose></waypoint>
+          
+          <!-- Cammina dritto verso l'alto fino a Y=2 (10 metri, ci mette ~6.6s) -->
+          <waypoint><time>6.6</time><pose>-8 2 0 0 0 1.57</pose></waypoint>
+          
+          <!-- Si gira in diagonale verso l'interno -->
+          <waypoint><time>7.1</time><pose>-8 2 0 0 0 0.785</pose></waypoint>
+          
+          <!-- Percorre diagonale (circa 8.5 metri) -->
+          <waypoint><time>12.7</time><pose>-2 8 0 0 0 0.785</pose></waypoint>
+          
+          <!-- Si gira e va verso destra lungo il bordo superiore -->
+          <waypoint><time>13.2</time><pose>-2 8 0 0 0 0</pose></waypoint>
+          <waypoint><time>19.8</time><pose>8 8 0 0 0 0</pose></waypoint>
+          
+          <!-- Devia giù verso il centro basso -->
+          <waypoint><time>20.3</time><pose>8 8 0 0 0 -2.35</pose></waypoint>
+          
+          <!-- Lunga diagonale attraverso la mappa (circa 15 metri) -->
+          <waypoint><time>30.3</time><pose>-2 -2 0 0 0 -2.35</pose></waypoint>
+          
+          <!-- Si gira per tornare giù verso il bordo inferiore -->
+          <waypoint><time>30.8</time><pose>-2 -2 0 0 0 -1.57</pose></waypoint>
+          <waypoint><time>34.8</time><pose>-2 -8 0 0 0 -1.57</pose></waypoint>
+          
+          <!-- Si gira verso sinistra per chiudere il perimetro -->
+          <waypoint><time>35.3</time><pose>-2 -8 0 0 0 -3.14</pose></waypoint>
+          <waypoint><time>39.3</time><pose>-8 -8 0 0 0 -3.14</pose></waypoint>
+          
+          <!-- Si rigira verso l'alto per ripartire fluido -->
+          <waypoint><time>39.8</time><pose>-8 -8 0 0 0 1.57</pose></waypoint>
+        </trajectory>
+      </script>
+
+      <!-- IL PLUGIN CHE HAI COMPILATO PER IL LIDAR -->
+      <plugin name="actor_collisions_plugin" filename="libactor_collisions_plugin.so">
+        <scaling collision="L-Thigh_Collider" scale="12.0 12.0 12.0"/>
+	<scaling collision="R-Thigh_Collider" scale="12.0 12.0 12.0"/>
+        <scaling collision="L-Calf_Collider" scale="12.0 12.0 12.0"/>
+        <scaling collision="R-Calf_Collider" scale="12.0 12.0 12.0"/>
+        <scaling collision="Neck_Collider" scale="12.0 12.0 12.0"/>
+      </plugin>
+    </actor>
+
+    <actor name="actor_2">
+      <!-- Skin e animazione base (inclusi di default in Gazebo) -->
+      <skin>
+        <filename>walk.dae</filename>
+	<scale>1.0</scale>
+      </skin>
+      <animation name="walking">
+        <filename>walk.dae</filename>
+        <scale>1.0</scale>
+	<interpolate_x>true</interpolate_x>
+      </animation>
+      <!-- Script Attore 2: Tagli al centro e percorsi a bordo -->
+      <script>
+        <loop>true</loop>
+        <delay_start>2.000000</delay_start>
+        <auto_start>true</auto_start>
+        <trajectory id="1" type="walking">
+          <!-- Partenza lato destro lontano (x=8, y=0), guarda verso sinistra (yaw=-3.14) -->
+          <waypoint><time>0.0</time><pose>8 0 0 0 0 -3.14</pose></waypoint>
+          
+          <!-- Taglia dritto tutto il centro fino a X=-8 (16 metri, ci mette ~10.6s) -->
+          <waypoint><time>10.6</time><pose>-8 0 0 0 0 -3.14</pose></waypoint>
+          
+          <!-- Si gira verso l'alto per costeggiare il bordo sinistro -->
+          <waypoint><time>11.1</time><pose>-8 0 0 0 0 1.57</pose></waypoint>
+          <waypoint><time>15.1</time><pose>-8 6 0 0 0 1.57</pose></waypoint>
+          
+          <!-- Si gira per tornare al centro in diagonale -->
+          <waypoint><time>15.6</time><pose>-8 6 0 0 0 -0.5</pose></waypoint>
+          
+          <!-- Lunga diagonale fino a basso destra -->
+          <waypoint><time>25.6</time><pose>6 -6 0 0 0 -0.5</pose></waypoint>
+          
+          <!-- Si gira verso l'alto per tornare alla Y=0 -->
+          <waypoint><time>26.1</time><pose>6 -6 0 0 0 1.57</pose></waypoint>
+          <waypoint><time>30.1</time><pose>6 0 0 0 0 1.57</pose></waypoint>
+          
+          <!-- Torna a destra verso il punto di partenza (X=8) -->
+          <waypoint><time>30.6</time><pose>6 0 0 0 0 0</pose></waypoint>
+          <waypoint><time>31.9</time><pose>8 0 0 0 0 0</pose></waypoint>
+          
+          <!-- Si rigira verso sinistra per chiudere il loop in posa corretta -->
+          <waypoint><time>32.4</time><pose>8 0 0 0 0 -3.14</pose></waypoint>
+        </trajectory>
+      </script>
+
+      <!-- IL PLUGIN CHE HAI COMPILATO PER IL LIDAR -->
+      <plugin name="actor_collisions_plugin" filename="libactor_collisions_plugin.so">
+        <scaling collision="L-Thigh_Collider" scale="12.0 12.0 12.0"/>
+        <scaling collision="R-Thigh_Collider" scale="12.0 12.0 12.0"/>
+        <scaling collision="L-Calf_Collider" scale="12.0 12.0 12.0"/>
+        <scaling collision="R-Calf_Collider" scale="12.0 12.0 12.0"/>
+        <scaling collision="Neck_Collider" scale="12.0 12.0 12.0"/>
+      </plugin>
+    </actor>
+    <!-- GRUPPO: ATTORE 3 (Sinistra) -->
+    <actor name="actor_3_group_L">
+      <skin><filename>walk.dae</filename><scale>1.0</scale></skin>
+      <animation name="walking">
+        <filename>walk.dae</filename><scale>1.0</scale><interpolate_x>true</interpolate_x>
+      </animation>
+      <script>
+        <loop>true</loop>
+        <delay_start>5.0</delay_start>
+        <auto_start>true</auto_start>
+        <trajectory id="3" type="walking">
+          <!-- Partenza lato superiore (X=0, Y=8), rivolti verso il basso (yaw=-1.57) -->
+          <waypoint><time>0.0</time><pose>-1 8 0 0 0 -1.57</pose></waypoint>
+          
+          <!-- Camminata giù fino a Y=0 (Distanza: 8m. Tempo: ~5.3s) -->
+          <waypoint><time>5.3</time><pose>-1 0 0 0 0 -1.57</pose></waypoint>
+          <!-- FIX ROTAZIONE: Stesse coordinate, yaw verso destra -->
+          <waypoint><time>5.4</time><pose>-1 0 0 0 0 0.0</pose></waypoint>
+          
+          <!-- Camminata a destra fino a X=6 (Distanza: 7m. Tempo: ~4.6s) -->
+          <waypoint><time>10.0</time><pose>6 0 0 0 0 0.0</pose></waypoint>
+          <!-- FIX ROTAZIONE: Stesse coordinate, yaw in diagonale basso-sinistra -->
+          <waypoint><time>10.1</time><pose>6 0 0 0 0 -2.35</pose></waypoint>
+          
+          <!-- Diagonale verso basso-sinistra fino a X=0, Y=-6 (Distanza: ~8.5m. Tempo: ~5.6s) -->
+          <waypoint><time>15.7</time><pose>0 -6 0 0 0 -2.35</pose></waypoint>
+          <!-- FIX ROTAZIONE: Stesse coordinate, yaw verso l'alto -->
+          <waypoint><time>15.8</time><pose>0 -6 0 0 0 1.57</pose></waypoint>
+          
+          <!-- Camminata dritto in su verso il punto di partenza Y=8 (Distanza: 14m. Tempo: ~9.3s) -->
+          <waypoint><time>25.1</time><pose>-1 8 0 0 0 1.57</pose></waypoint>
+          <!-- FIX ROTAZIONE: Si gira verso il basso per chiudere il loop -->
+          <waypoint><time>25.2</time><pose>-1 8 0 0 0 -1.57</pose></waypoint>
+        </trajectory>
+      </script>
+      <plugin name="actor_collisions_plugin_3" filename="libactor_collisions_plugin.so">
+        <scaling collision="L-Thigh_Collider" scale="12.0 12.0 12.0"/>
+        <scaling collision="R-Thigh_Collider" scale="12.0 12.0 12.0"/>
+        <scaling collision="L-Calf_Collider" scale="12.0 12.0 12.0"/>
+        <scaling collision="R-Calf_Collider" scale="12.0 12.0 12.0"/>
+        <scaling collision="Neck_Collider" scale="12.0 12.0 12.0"/>
+      </plugin>
+    </actor>
+
+    <!-- GRUPPO: ATTORE 4 (Destra) -->
+    <!-- Segue l'identico percorso di Attore 3, ma traslato di +1 metro sul fianco logico -->
+    <actor name="actor_4_group_R">
+      <skin><filename>walk.dae</filename><scale>1.0</scale></skin>
+      <animation name="walking">
+        <filename>walk.dae</filename><scale>1.0</scale><interpolate_x>true</interpolate_x>
+      </animation>
+      <script>
+        <!-- Stesso identico delay dell'Attore 3 così partono perfettamente insieme -->
+        <loop>true</loop>
+        <delay_start>5.0</delay_start>
+        <auto_start>true</auto_start>
+        <trajectory id="4" type="walking">
+          <!-- Partenza traslata (+1 metro sull'asse X rispetto all'attore 3 che è a -1) -->
+          <waypoint><time>0.0</time><pose>0 8 0 0 0 -1.57</pose></waypoint>
+          
+          <waypoint><time>5.3</time><pose>0 0 0 0 0 -1.57</pose></waypoint>
+          <waypoint><time>5.4</time><pose>0 0 0 0 0 0.0</pose></waypoint>
+          
+          <!-- Qui il fianco traslato è l'asse Y (sta "sotto" rispetto all'attore 3) -->
+          <waypoint><time>10.0</time><pose>7 -1 0 0 0 0.0</pose></waypoint>
+          <waypoint><time>10.1</time><pose>7 -1 0 0 0 -2.35</pose></waypoint>
+          
+          <!-- Diagonale: Traslati di +1 su X e -1 su Y -->
+          <waypoint><time>15.7</time><pose>1 -7 0 0 0 -2.35</pose></waypoint>
+          <waypoint><time>15.8</time><pose>1 -7 0 0 0 1.57</pose></waypoint>
+          
+          <waypoint><time>25.1</time><pose>0 8 0 0 0 1.57</pose></waypoint>
+          <waypoint><time>25.2</time><pose>0 8 0 0 0 -1.57</pose></waypoint>
+        </trajectory>
+      </script>
+      <plugin name="actor_collisions_plugin_4" filename="libactor_collisions_plugin.so">
+        <scaling collision="L-Thigh_Collider" scale="12.0 12.0 12.0"/>
+        <scaling collision="R-Thigh_Collider" scale="12.0 12.0 12.0"/>
+        <scaling collision="L-Calf_Collider" scale="12.0 12.0 12.0"/>
+        <scaling collision="R-Calf_Collider" scale="12.0 12.0 12.0"/>
+        <scaling collision="Neck_Collider" scale="12.0 12.0 12.0"/>
+      </plugin>
+    </actor>
+  </world>
+</sdf>

@@ -1,0 +1,1 @@
+/root/ros1_ws/devel/.private/game_theory_sim/lib/pkgconfig/game_theory_sim.pc

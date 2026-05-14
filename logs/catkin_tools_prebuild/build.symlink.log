@@ -1,0 +1,13 @@
+Symlinking /root/ros1_ws/devel/./_setup_util.py
+Symlinking /root/ros1_ws/devel/./env.sh
+Symlinking /root/ros1_ws/devel/./setup.bash
+Symlinking /root/ros1_ws/devel/./local_setup.bash
+Symlinking /root/ros1_ws/devel/./setup.sh
+Symlinking /root/ros1_ws/devel/./local_setup.sh
+Symlinking /root/ros1_ws/devel/./setup.zsh
+Symlinking /root/ros1_ws/devel/./local_setup.zsh
+Symlinking /root/ros1_ws/devel/./setup.fish
+Symlinking /root/ros1_ws/devel/./local_setup.fish
+Symlinking /root/ros1_ws/devel/lib/pkgconfig/catkin_tools_prebuild.pc
+Symlinking /root/ros1_ws/devel/share/catkin_tools_prebuild/cmake/catkin_tools_prebuildConfig.cmake
+Symlinking /root/ros1_ws/devel/share/catkin_tools_prebuild/cmake/catkin_tools_prebuildConfig-version.cmake
