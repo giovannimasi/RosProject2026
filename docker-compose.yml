@@ -1,0 +1,31 @@
+services:
+  ros1_noetic:
+    build: 
+      context: .
+      dockerfile: Dockerfile
+    image: ros-noetic-game-theory:latest
+    container_name: ros1_dev
+    network_mode: "host"
+    environment:
+      - DISPLAY=${DISPLAY}
+      - QT_QPA_PLATFORM=xcb
+      - XDG_RUNTIME_DIR=/run/user/1000
+      - GZ_PARTITION=test
+      - ROS_DOMAIN_ID=0
+      - QT_X11_NO_MITSHM=1
+      - ROS_MASTER_URI=http://127.0.0.1:11311
+      - ROS_HOSTNAME=127.0.0.1
+      - LIBGL_ALWAYS_SOFTWARE=1
+      - QT_AUTO_SCREEN_SCALE_FACTOR=1
+      - QT_ENABLE_HIGHDPI_SCALING=1
+    volumes:
+      - /etc/hosts:/etc/hosts:ro
+      - /tmp/.X11-unix:/tmp/.X11-unix:rw
+      - ./ros1_ws:/root/ros1_ws
+      - /home/giovannimasi/MATLAB/Projects/Robotics:/root/Robotics
+      - ./.bashrc:/root/.bashrc
+      - /dev/dri:/dev/dri
+    # Mette il source nel .bashrc e poi tiene il container acceso
+    command: sleep infinity
+    restart: "no"
+
