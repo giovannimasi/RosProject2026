@@ -2,7 +2,7 @@
 
 ## Setup instructions
 
-Docker setup is already present in the repo. Use the following instruction to build everything
+Docker setup is already present in the repo. Use the following instruction to build and start.
 
 ### Build image and start the container
 
