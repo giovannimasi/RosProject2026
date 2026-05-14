@@ -22,7 +22,6 @@ services:
       - /etc/hosts:/etc/hosts:ro
       - /tmp/.X11-unix:/tmp/.X11-unix:rw
       - ./ros1_ws:/root/ros1_ws
-      - /home/giovannimasi/MATLAB/Projects/Robotics:/root/Robotics
       - ./.bashrc:/root/.bashrc
       - /dev/dri:/dev/dri
     # Mette il source nel .bashrc e poi tiene il container acceso
