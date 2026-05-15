@@ -1,0 +1,4 @@
+services:
+  ros1_noetic:
+    volumes:
+      - /mnt/wslg:/mnt/wslg
