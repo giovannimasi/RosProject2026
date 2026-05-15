@@ -1,6 +1,8 @@
 services:
   ros1_noetic:
     ports:
-      - "127.0.0.1:11311:11311"
+      - "11311:11311"
+    environment:
+      - ROS_MASTER_URI=http://host.docker.internal:11311
     volumes:
       - /mnt/wslg:/mnt/wslg
