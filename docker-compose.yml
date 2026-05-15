@@ -5,7 +5,6 @@ services:
       dockerfile: Dockerfile
     image: ros-noetic-game-theory:latest
     container_name: ros1_dev
-    network_mode: "host"
     environment:
       - DISPLAY=${DISPLAY}
       - QT_QPA_PLATFORM=xcb
