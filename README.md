@@ -7,7 +7,7 @@ Docker setup is already present in the repo. Use the following instruction to bu
 ### Build image and start the container
 
 ```bash
-docker compose -f docker-compose.wsl.yml up -d --build
+docker compose -f docker-compose.yml -f docker-compose.wsl.yml up -d --build
 ```
 
 ### Enter in container bash
