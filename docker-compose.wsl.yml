@@ -1,4 +1,6 @@
 services:
   ros1_noetic:
+    ports:
+      - "127.0.0.1:11311:11311"
     volumes:
       - /mnt/wslg:/mnt/wslg
