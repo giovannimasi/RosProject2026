@@ -1,5 +1,4 @@
 services:
   ros1_noetic:
-    network_mode: host
     volumes:
       - /mnt/wslg:/mnt/wslg
