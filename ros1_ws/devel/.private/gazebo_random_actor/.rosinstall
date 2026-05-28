@@ -1,0 +1,2 @@
+- setup-file:
+    local-name: /root/ros1_ws/devel/.private/gazebo_random_actor/setup.sh

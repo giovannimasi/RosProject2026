@@ -1,0 +1,4 @@
+Symlinking /root/ros1_ws/devel/lib/librandom_smooth_actor_plugin.so
+Symlinking /root/ros1_ws/devel/lib/pkgconfig/gazebo_random_actor.pc
+Symlinking /root/ros1_ws/devel/share/gazebo_random_actor/cmake/gazebo_random_actorConfig.cmake
+Symlinking /root/ros1_ws/devel/share/gazebo_random_actor/cmake/gazebo_random_actorConfig-version.cmake
