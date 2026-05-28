@@ -1,0 +1,40 @@
+turtlebot_name: "turtlebot3_waffle_pi"
+
+actor_names:
+  - "actor"
+  - "actor_2"
+  - "actor_3_group_L"
+  - "actor_4_group_R"
+
+goals:
+  - [3.5, 0.0]
+  - [3.5, 3.5]
+  - [-3.5, 3.5]
+  - [-3.5, -3.5]
+  - [3.5, -3.5]
+
+loop_goals: true
+
+interaction_radius: 5.0
+agent_radius: 0.375
+collision_margin: 0.15
+
+dt: 0.1
+planning_horizon: 2.0
+control_rate: 10.0
+
+robot_v: 0.16
+robot_w: 0.65
+
+actor_turn_rate: 0.25
+
+goal_weight: 2.0
+heading_weight: 0.2
+stop_cost: 20.0
+
+goal_tolerance: 0.25
+
+min_actor_speed: 0.05
+max_actor_speed: 1.2
+
+enable_debug: true

@@ -1,0 +1,10 @@
+<launch>
+  <node pkg="gt_motion_planner"
+        type="gt_planner_node"
+        name="gt_planner_node"
+        output="screen">
+
+    <rosparam file="$(find gt_motion_planner)/config/gt_planner.yaml" command="load"/>
+
+  </node>
+</launch>
