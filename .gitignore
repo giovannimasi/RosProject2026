@@ -1,2 +1,2 @@
 docker-compose.override.yml
-**/logs/
+ros1_ws/logs/

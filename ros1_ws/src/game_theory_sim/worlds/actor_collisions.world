@@ -33,25 +33,42 @@
         <scaling collision="R-Calf_Collider" scale="12.0 12.0 12.0"/>
         <scaling collision="Neck_Collider" scale="12.0 12.0 12.0"/>
       </plugin>
-      <plugin name="random_smooth_actor_plugin" filename="librandom_smooth_actor_plugin.so">
-        <min_x>-8.0</min_x>
-        <max_x>8.0</max_x>
-        <min_y>-8.0</min_y>
-	<max_y>8.0</max_y>
+<plugin name="random_smooth_actor_plugin" filename="librandom_smooth_actor_plugin.so">
+  <min_x>-8.0</min_x>
+  <max_x>8.0</max_x>
+  <min_y>-8.0</min_y>
+  <max_y>8.0</max_y>
 
-	<roll_offset>1.5708</roll_offset>
-	<pitch_offset>0</pitch_offset>
-        <yaw_offset>1.5780</yaw_offset>
-        <z_offset>1.0</z_offset>
+  <min_speed>0.45</min_speed>
+  <max_speed>0.70</max_speed>
+  <max_turn_rate>0.35</max_turn_rate>
 
-        <min_speed>0.45</min_speed>
-        <max_speed>0.75</max_speed>
-        <max_turn_rate>0.45</max_turn_rate>
-        <target_tolerance>0.7</target_tolerance>
-        <animation_factor>4.5</animation_factor>
+  <min_straight_time>4.0</min_straight_time>
+  <max_straight_time>9.0</max_straight_time>
+  <min_turn_angle>-1.2</min_turn_angle>
+  <max_turn_angle>1.2</max_turn_angle>
 
-        <seed>101</seed>
-      </plugin>
+  <wall_margin>1.0</wall_margin>
+  <look_ahead_distance>1.5</look_ahead_distance>
+
+  <avoidance_radius>1.4</avoidance_radius>
+  <hard_avoidance_radius>0.65</hard_avoidance_radius>
+  <avoidance_gain>1.0</avoidance_gain>
+
+  <avoid_model>actor_2</avoid_model>
+  <avoid_model>actor_3_group_L</avoid_model>
+  <avoid_model>actor_4_group_R</avoid_model>
+
+  <heading_noise_amplitude>0.025</heading_noise_amplitude>
+  <heading_noise_frequency>0.5</heading_noise_frequency>
+
+  <roll_offset>1.5708</roll_offset>
+  <pitch_offset>0.0</pitch_offset>
+  <yaw_offset>1.5780</yaw_offset>
+  <z_offset>1.0</z_offset>
+
+  <seed>101</seed>
+</plugin>
     </actor>
 
     <!-- Actor 2 -->
@@ -70,25 +87,42 @@
         <scaling collision="R-Calf_Collider" scale="12.0 12.0 12.0"/>
         <scaling collision="Neck_Collider" scale="12.0 12.0 12.0"/>
       </plugin>
-      <plugin name="random_smooth_actor_plugin_2" filename="librandom_smooth_actor_plugin.so">
-        <min_x>-8.0</min_x>
-        <max_x>8.0</max_x>
-        <min_y>-8.0</min_y>
-        <max_y>8.0</max_y>
+<plugin name="random_smooth_actor_plugin" filename="librandom_smooth_actor_plugin.so">
+  <min_x>-8.0</min_x>
+  <max_x>8.0</max_x>
+  <min_y>-8.0</min_y>
+  <max_y>8.0</max_y>
 
-	<roll_offset>1.5708</roll_offset>
-	<pitch_offset>0</pitch_offset>
-        <yaw_offset>1.5780</yaw_offset>
-        <z_offset>1.0</z_offset>
+  <min_speed>0.45</min_speed>
+  <max_speed>0.70</max_speed>
+  <max_turn_rate>0.35</max_turn_rate>
 
-        <min_speed>0.45</min_speed>
-        <max_speed>0.75</max_speed>
-        <max_turn_rate>0.45</max_turn_rate>
-        <target_tolerance>0.7</target_tolerance>
-        <animation_factor>4.5</animation_factor>
+  <min_straight_time>4.0</min_straight_time>
+  <max_straight_time>9.0</max_straight_time>
+  <min_turn_angle>-1.2</min_turn_angle>
+  <max_turn_angle>1.2</max_turn_angle>
 
-        <seed>202</seed>
-      </plugin>
+  <wall_margin>1.0</wall_margin>
+  <look_ahead_distance>1.5</look_ahead_distance>
+
+  <avoidance_radius>1.4</avoidance_radius>
+  <hard_avoidance_radius>0.65</hard_avoidance_radius>
+  <avoidance_gain>1.0</avoidance_gain>
+
+<avoid_model>actor</avoid_model>
+<avoid_model>actor_3_group_L</avoid_model>
+<avoid_model>actor_4_group_R</avoid_model>
+
+  <heading_noise_amplitude>0.025</heading_noise_amplitude>
+  <heading_noise_frequency>0.5</heading_noise_frequency>
+
+  <roll_offset>1.5708</roll_offset>
+  <pitch_offset>0.0</pitch_offset>
+  <yaw_offset>1.5780</yaw_offset>
+  <z_offset>1.0</z_offset>
+
+  <seed>202</seed>
+</plugin>
     </actor>
 
     <!-- Actor 3 (group L) -->
@@ -106,32 +140,49 @@
         <scaling collision="R-Calf_Collider" scale="12.0 12.0 12.0"/>
         <scaling collision="Neck_Collider" scale="12.0 12.0 12.0"/>
       </plugin>
-      <plugin name="random_group_actor_L" filename="librandom_smooth_actor_plugin.so">
-        <min_x>-7.0</min_x>
-        <max_x>7.0</max_x>
-        <min_y>-7.0</min_y>
-	<max_y>7.0</max_y>
+<plugin name="random_group_actor_L" filename="librandom_smooth_actor_plugin.so">
+  <min_x>-7.0</min_x>
+  <max_x>7.0</max_x>
+  <min_y>-7.0</min_y>
+  <max_y>7.0</max_y>
 
-	<roll_offset>1.5708</roll_offset>
-	<pitch_offset>0</pitch_offset>
-        <yaw_offset>1.5780</yaw_offset>
-        <z_offset>1.0</z_offset>
+  <min_speed>0.50</min_speed>
+  <max_speed>0.62</max_speed>
+  <max_turn_rate>0.28</max_turn_rate>
 
-        <min_speed>0.55</min_speed>
-        <max_speed>0.65</max_speed>
-        <max_turn_rate>0.35</max_turn_rate>
-        <target_tolerance>0.8</target_tolerance>
-        <animation_factor>4.5</animation_factor>
+  <min_straight_time>5.0</min_straight_time>
+  <max_straight_time>10.0</max_straight_time>
+  <min_turn_angle>-1.0</min_turn_angle>
+  <max_turn_angle>1.0</max_turn_angle>
 
-        <use_center_pose>true</use_center_pose>
-        <center_x>0.0</center_x>
-        <center_y>6.0</center_y>
-        <center_yaw>-1.57</center_yaw>
+  <wall_margin>1.2</wall_margin>
+  <look_ahead_distance>1.5</look_ahead_distance>
 
-        <lateral_offset>-0.45</lateral_offset>
-        <seed>303</seed>
-      </plugin>
-    </actor>
+  <avoidance_radius>1.4</avoidance_radius>
+  <hard_avoidance_radius>0.65</hard_avoidance_radius>
+  <avoidance_gain>1.0</avoidance_gain>
+
+  <avoid_model>actor</avoid_model>
+  <avoid_model>actor_2</avoid_model>
+
+  <use_center_pose>true</use_center_pose>
+  <center_x>0.0</center_x>
+  <center_y>6.0</center_y>
+  <center_yaw>-1.57</center_yaw>
+
+  <lateral_offset>-0.45</lateral_offset>
+
+  <heading_noise_amplitude>0.015</heading_noise_amplitude>
+  <heading_noise_frequency>0.4</heading_noise_frequency>
+
+  <roll_offset>1.5708</roll_offset>
+  <pitch_offset>0.0</pitch_offset>
+  <yaw_offset>1.5780</yaw_offset>
+  <z_offset>1.0</z_offset>
+
+  <seed>303</seed>
+</plugin>
+</actor>
 
     <!-- Actor 4 (group R) -->
     <actor name="actor_4_group_R">
@@ -148,31 +199,48 @@
         <scaling collision="R-Calf_Collider" scale="12.0 12.0 12.0"/>
         <scaling collision="Neck_Collider" scale="12.0 12.0 12.0"/>
       </plugin>
-      <plugin name="random_group_actor_R" filename="librandom_smooth_actor_plugin.so">
-        <min_x>-7.0</min_x>
-        <max_x>7.0</max_x>
-        <min_y>-7.0</min_y>
-        <max_y>7.0</max_y>
+<plugin name="random_group_actor_R" filename="librandom_smooth_actor_plugin.so">
+  <min_x>-7.0</min_x>
+  <max_x>7.0</max_x>
+  <min_y>-7.0</min_y>
+  <max_y>7.0</max_y>
 
-	<roll_offset>1.5708</roll_offset>
-	<pitch_offset>0</pitch_offset>
-        <yaw_offset>1.5780</yaw_offset>
-        <z_offset>1.0</z_offset>
+  <min_speed>0.50</min_speed>
+  <max_speed>0.62</max_speed>
+  <max_turn_rate>0.28</max_turn_rate>
 
-        <min_speed>0.55</min_speed>
-        <max_speed>0.65</max_speed>
-        <max_turn_rate>0.35</max_turn_rate>
-        <target_tolerance>0.8</target_tolerance>
-        <animation_factor>4.5</animation_factor>
+  <min_straight_time>5.0</min_straight_time>
+  <max_straight_time>10.0</max_straight_time>
+  <min_turn_angle>-1.0</min_turn_angle>
+  <max_turn_angle>1.0</max_turn_angle>
 
-        <use_center_pose>true</use_center_pose>
-        <center_x>0.0</center_x>
-        <center_y>6.0</center_y>
-        <center_yaw>-1.57</center_yaw>
+  <wall_margin>1.2</wall_margin>
+  <look_ahead_distance>1.5</look_ahead_distance>
 
-        <lateral_offset>0.45</lateral_offset>
-        <seed>303</seed>
-      </plugin>
-    </actor>
+  <avoidance_radius>1.4</avoidance_radius>
+  <hard_avoidance_radius>0.65</hard_avoidance_radius>
+  <avoidance_gain>1.0</avoidance_gain>
+
+  <avoid_model>actor</avoid_model>
+  <avoid_model>actor_2</avoid_model>
+
+  <use_center_pose>true</use_center_pose>
+  <center_x>0.0</center_x>
+  <center_y>6.0</center_y>
+  <center_yaw>-1.57</center_yaw>
+
+  <lateral_offset>0.45</lateral_offset>
+
+  <heading_noise_amplitude>0.015</heading_noise_amplitude>
+  <heading_noise_frequency>0.4</heading_noise_frequency>
+
+  <roll_offset>1.5708</roll_offset>
+  <pitch_offset>0.0</pitch_offset>
+  <yaw_offset>1.5780</yaw_offset>
+  <z_offset>1.0</z_offset>
+
+  <seed>303</seed>
+</plugin>
+</actor>
   </world>
 </sdf>

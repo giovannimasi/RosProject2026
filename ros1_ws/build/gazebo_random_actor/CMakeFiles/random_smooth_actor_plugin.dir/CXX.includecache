@@ -19,17 +19,17 @@ gazebo/common/Time.hh
 -
 ignition/math/Pose3.hh
 -
-ignition/math/Vector3.hh
--
-ignition/math/Angle.hh
--
 random
 -
 string
 -
+vector
+-
 algorithm
 -
 cmath
+-
+functional
 -
 
 /usr/include/gazebo-11/gazebo/Master.hh
