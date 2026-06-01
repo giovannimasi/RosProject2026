@@ -206,3 +206,6 @@ include_directories(
 
 ## Add folders to be run by python nosetests
 # catkin_add_nosetests(test)
+add_executable(game_theory_planner_node src/main_node.cpp src/game_theory_planner.cpp)
+target_link_libraries(game_theory_planner_node ${catkin_LIBRARIES})
+include_directories(include)
