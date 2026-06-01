@@ -18,4 +18,10 @@
   
   <!-- 3. Spawna il Turtlebot3 nel mondo -->
   <node pkg="gazebo_ros" type="spawn_model" name="spawn_urdf" args="-urdf -model turtlebot3_$(arg model) -x $(arg x_pos) -y $(arg y_pos) -z $(arg z_pos) -param robot_description" />
+
+  <!-- 4. Pubblica il TF tree (odom->base_footprint->base_link->base_scan ...) -->
+  <!--    Senza questo RViz non trova base_scan (lidar) ne' il RobotModel.    -->
+  <node pkg="robot_state_publisher" type="robot_state_publisher" name="robot_state_publisher" output="screen">
+    <param name="publish_frequency" value="50.0"/>
+  </node>
 </launch>

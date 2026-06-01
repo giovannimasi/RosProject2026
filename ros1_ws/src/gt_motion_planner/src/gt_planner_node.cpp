@@ -69,6 +69,17 @@ struct Goal
   double y{0.0};
 };
 
+// Ostacolo statico (X^obj). box: semi-lati hx,hy; cylinder: raggio r.
+struct Obstacle
+{
+  bool is_box{true};
+  double x{0.0};
+  double y{0.0};
+  double hx{0.0};
+  double hy{0.0};
+  double r{0.0};
+};
+
 // Un'azione = una traiettoria (Sect. 3) con la sua serie di controlli.
 struct Action
 {
@@ -77,6 +88,7 @@ struct Action
   double w_cmd{0.0};              // primo controllo angolare
   double cost{0.0};               // Jhat = Length  (Eq. 9)
   bool group_blocked{false};      // true se attraversa il corridoio di un gruppo
+  bool obstacle_blocked{false};   // true se attraversa un ostacolo statico
   std::string name;
 };
 
@@ -150,6 +162,9 @@ public:
     pnh.param<double>("goal_region_x", goal_region_x_, 0.30);
     pnh.param<double>("goal_region_y", goal_region_y_, 0.50);
     LoadGoals(pnh);
+    LoadObstacles(pnh);
+    pnh.param<bool>("obstacle_autodetect", obstacle_autodetect_, true);
+    pnh.param<double>("obstacle_default_radius", obstacle_default_radius_, 0.40);
 
     pnh.param<double>("interaction_radius", interaction_radius_, 5.0);
     pnh.param<double>("agent_radius", agent_radius_, 0.375);
@@ -299,6 +314,99 @@ private:
     ROS_INFO("[gt_planner] Goal caricati: %zu", goals_.size());
   }
 
+  void LoadObstacles(ros::NodeHandle &pnh)
+  {
+    XmlRpc::XmlRpcValue list;
+    if (!pnh.getParam("static_obstacles", list) ||
+        list.getType() != XmlRpc::XmlRpcValue::TypeArray)
+      return;
+
+    auto num = [](XmlRpc::XmlRpcValue &v) -> double {
+      if (v.getType() == XmlRpc::XmlRpcValue::TypeInt)
+        return static_cast<int>(v);
+      return static_cast<double>(v);
+    };
+
+    for (int i = 0; i < list.size(); ++i)
+    {
+      if (list[i].getType() != XmlRpc::XmlRpcValue::TypeStruct)
+        continue;
+      Obstacle o;
+      std::string type = list[i].hasMember("type") ? static_cast<std::string>(list[i]["type"]) : "box";
+      o.is_box = (type != "cylinder");
+      if (list[i].hasMember("x")) o.x = num(list[i]["x"]);
+      if (list[i].hasMember("y")) o.y = num(list[i]["y"]);
+      if (o.is_box)
+      {
+        if (list[i].hasMember("half_x")) o.hx = num(list[i]["half_x"]);
+        if (list[i].hasMember("half_y")) o.hy = num(list[i]["half_y"]);
+      }
+      else if (list[i].hasMember("radius"))
+        o.r = num(list[i]["radius"]);
+      base_obstacles_.push_back(o);
+    }
+    obstacles_ = base_obstacles_;
+    ROS_INFO("[gt_planner] Ostacoli statici da file: %zu", base_obstacles_.size());
+  }
+
+  // Ricostruisce la lista live degli ostacoli: quelli del file (forma esatta)
+  // + quelli rilevati a runtime da /gazebo/model_states (cerchi, raggio
+  // default). Qualunque model che non sia robot/attore/ground/sun e che non
+  // inizi per "obs_" (gia' nel file) viene trattato come ostacolo statico.
+  void RefreshObstacles(const State &robot)
+  {
+    obstacles_ = base_obstacles_;
+    if (!obstacle_autodetect_)
+      return;
+
+    for (size_t i = 0; i < latest_msg_.name.size(); ++i)
+    {
+      const std::string &nm = latest_msg_.name[i];
+      if (nm == turtlebot_name_ || nm == "ground_plane" || nm == "sun")
+        continue;
+      if (std::find(actor_names_.begin(), actor_names_.end(), nm) != actor_names_.end())
+        continue;
+      if (nm.rfind("obs_", 0) == 0)  // gia' descritto con forma esatta nel file
+        continue;
+
+      Obstacle o;
+      o.is_box = false;
+      o.x = latest_msg_.pose[i].position.x;
+      o.y = latest_msg_.pose[i].position.y;
+      o.r = obstacle_default_radius_;
+
+      // solo se entro raggio di interazione (limita il carico)
+      if (std::hypot(o.x - robot.x, o.y - robot.y) <= interaction_radius_)
+        obstacles_.push_back(o);
+    }
+  }
+
+  // true se una traiettoria entra in un ostacolo statico
+  bool TrajectoryHitsObstacle(const std::vector<State> &t) const
+  {
+    for (const auto &p : t)
+      if (InsideObstacle(p.x, p.y))
+        return true;
+    return false;
+  }
+
+  // true se (px,py) e' dentro un ostacolo gonfiato del raggio agente
+  bool InsideObstacle(double px, double py) const
+  {
+    for (const auto &o : obstacles_)
+    {
+      if (o.is_box)
+      {
+        if (std::abs(px - o.x) <= o.hx + agent_radius_ &&
+            std::abs(py - o.y) <= o.hy + agent_radius_)
+          return true;
+      }
+      else if (std::hypot(px - o.x, py - o.y) < o.r + agent_radius_)
+        return true;
+    }
+    return false;
+  }
+
   void AdvanceGoal()
   {
     if (current_goal_idx_ + 1 < goals_.size())
@@ -371,10 +479,13 @@ private:
         o->setYaw(yaw);
       });
 
-    // nessun ostacolo statico nel mondo: lo spazio ammissibile e' il workspace
+    // spazio ammissibile X^adm = workspace meno ostacoli statici X^obj
     // (gli agenti dinamici sono gestiti dal gioco, cfr. Sect. 3).
     ss_->setStateValidityChecker(
-      [](const ob::State *) -> bool { return true; });
+      [this](const ob::State *s) -> bool {
+        const auto *se2 = s->as<ob::SE2StateSpace::StateType>();
+        return !InsideObstacle(se2->getX(), se2->getY());
+      });
 
     ss_->getSpaceInformation()->setPropagationStepSize(integrator_dt_);
 
@@ -466,12 +577,18 @@ private:
       // fino alla regione di goal: tratto percorso + distanza residua (stima
       // ammissibile del completamento in linea retta). Coincide con la
       // lunghezza del paper quando la traiettoria arriva effettivamente al goal.
+      // Full-to-goal (paper §4.3.1): si tiene il path RRT COMPLETO (non
+      // troncato). Costo = lunghezza piena + distanza residua al goal: se la
+      // soluzione raggiunge la goal region remaining~0 e Jhat = Length (Eq.9
+      // esatta); se e' approssimata il termine residuo mantiene la direzione.
+      // La collisione dinamica con gli attori resta limitata alla prima
+      // finestra ~planning_horizon perche' le traiettorie predette degli
+      // attori sono lunghe solo num_traj_steps_ (confronto ad indici di tempo).
       const double traveled = PathLength(a.trajectory);
       const double remaining =
         std::hypot(goal_x_ - a.trajectory.back().x, goal_y_ - a.trajectory.back().y);
       a.cost = traveled + remaining;
 
-      NormalizeTrajectory(a.trajectory);
       actions.push_back(a);
     }
 
@@ -509,8 +626,10 @@ private:
     stop.cost = max_cost * 1.1 + 0.05;
     actions.push_back(stop);
 
-    // marca le azioni che attraversano un corridoio di gruppo
+    // marca le azioni che attraversano un corridoio di gruppo o un ostacolo
     MarkGroupBlocked(actions);
+    for (auto &a : actions)
+      a.obstacle_blocked = TrajectoryHitsObstacle(a.trajectory);
 
     return actions;
   }
@@ -704,7 +823,8 @@ private:
       for (size_t i = 0; i < agents.size(); ++i)
       {
         const Action &act = agents[i].actions[alloc[r][i]];
-        if (collided[i] || (agents[i].is_robot && act.group_blocked))
+        if (collided[i] ||
+            (agents[i].is_robot && (act.group_blocked || act.obstacle_blocked)))
           costs[r][i] = kInf;            // J_tilde = INF
         else
           costs[r][i] = act.cost;        // J = Jhat = Length
@@ -1031,6 +1151,40 @@ private:
       }
     }
 
+    // ostacoli statici (grigio semitrasparente)
+    for (const auto &o : obstacles_)
+    {
+      visualization_msgs::Marker m;
+      m.header.frame_id = marker_frame_;
+      m.header.stamp = ros::Time::now();
+      m.ns = "obstacles";
+      m.id = id++;
+      m.action = visualization_msgs::Marker::ADD;
+      m.pose.position.x = o.x;
+      m.pose.position.y = o.y;
+      m.pose.position.z = 0.3;
+      m.pose.orientation.w = 1.0;
+      m.color.r = 0.5;
+      m.color.g = 0.5;
+      m.color.b = 0.55;
+      m.color.a = 0.6;
+      if (o.is_box)
+      {
+        m.type = visualization_msgs::Marker::CUBE;
+        m.scale.x = 2.0 * o.hx;
+        m.scale.y = 2.0 * o.hy;
+        m.scale.z = 0.6;
+      }
+      else
+      {
+        m.type = visualization_msgs::Marker::CYLINDER;
+        m.scale.x = 2.0 * o.r;
+        m.scale.y = 2.0 * o.r;
+        m.scale.z = 1.0;
+      }
+      arr.markers.push_back(m);
+    }
+
     marker_pub_.publish(arr);
   }
 
@@ -1074,6 +1228,9 @@ private:
         return;
       }
     }
+
+    // aggiorna gli ostacoli statici (file + rilevati a runtime dal mondo)
+    RefreshObstacles(robot);
 
     // ---- 1. costruzione agenti + action set ----
     std::vector<AgentActions> agents;
@@ -1181,9 +1338,9 @@ private:
       for (size_t i = 0; i < agents[0].actions.size(); ++i)
       {
         const auto &a = agents[0].actions[i];
+        const char *flag = a.obstacle_blocked ? "(OBS)" : (a.group_blocked ? "(GRP)" : "");
         char buf[96];
-        std::snprintf(buf, sizeof(buf), "%s=%.2f%s ",
-                      a.name.c_str(), a.cost, a.group_blocked ? "(GRP)" : "");
+        std::snprintf(buf, sizeof(buf), "%s=%.2f%s ", a.name.c_str(), a.cost, flag);
         line += buf;
       }
       ROS_INFO_THROTTLE(0.5, "%s", line.c_str());
@@ -1211,6 +1368,10 @@ private:
   std::vector<std::string> actor_names_;
   std::vector<std::pair<std::string, std::string>> group_pairs_;
   double group_corridor_half_width_{0.70};
+  std::vector<Obstacle> base_obstacles_;   // dal file (forma esatta)
+  std::vector<Obstacle> obstacles_;        // live = file + rilevati a runtime
+  bool obstacle_autodetect_{true};
+  double obstacle_default_radius_{0.40};
 
   std::vector<Goal> goals_;
   size_t current_goal_idx_{0};

@@ -39,8 +39,8 @@
   <min_y>-4.0</min_y>
   <max_y>4.0</max_y>
 
-  <min_speed>0.45</min_speed>
-  <max_speed>0.70</max_speed>
+  <min_speed>0.18</min_speed>
+  <max_speed>0.26</max_speed>
   <max_turn_rate>0.35</max_turn_rate>
 
   <min_straight_time>4.0</min_straight_time>
@@ -93,8 +93,8 @@
   <min_y>-4.0</min_y>
   <max_y>4.0</max_y>
 
-  <min_speed>0.45</min_speed>
-  <max_speed>0.70</max_speed>
+  <min_speed>0.18</min_speed>
+  <max_speed>0.26</max_speed>
   <max_turn_rate>0.35</max_turn_rate>
 
   <min_straight_time>4.0</min_straight_time>
@@ -141,13 +141,13 @@
         <scaling collision="Neck_Collider" scale="12.0 12.0 12.0"/>
       </plugin>
 <plugin name="random_group_actor_L" filename="librandom_smooth_actor_plugin.so">
-  <min_x>-3.5.0</min_x>
-  <max_x>3.5.0</max_x>
-  <min_y>-3.5.0</min_y>
-  <max_y>3.5.0</max_y>
+  <min_x>-3.5</min_x>
+  <max_x>3.5</max_x>
+  <min_y>-3.5</min_y>
+  <max_y>3.5</max_y>
 
-  <min_speed>0.50</min_speed>
-  <max_speed>0.62</max_speed>
+  <min_speed>0.18</min_speed>
+  <max_speed>0.26</max_speed>
   <max_turn_rate>0.28</max_turn_rate>
 
   <min_straight_time>5.0</min_straight_time>
@@ -200,13 +200,13 @@
         <scaling collision="Neck_Collider" scale="12.0 12.0 12.0"/>
       </plugin>
 <plugin name="random_group_actor_R" filename="librandom_smooth_actor_plugin.so">
-  <min_x>-3.5.0</min_x>
-  <max_x>3.5.0</max_x>
-  <min_y>-3.5.0</min_y>
-  <max_y>3.5.0</max_y>
+  <min_x>-3.5</min_x>
+  <max_x>3.5</max_x>
+  <min_y>-3.5</min_y>
+  <max_y>3.5</max_y>
 
-  <min_speed>0.50</min_speed>
-  <max_speed>0.62</max_speed>
+  <min_speed>0.18</min_speed>
+  <max_speed>0.26</max_speed>
   <max_turn_rate>0.28</max_turn_rate>
 
   <min_straight_time>5.0</min_straight_time>
@@ -242,5 +242,59 @@
   <seed>303</seed>
 </plugin>
 </actor>
+
+    <!-- ====================================================================
+         Ostacoli statici (X^obj). Devono combaciare con la lista
+         static_obstacles in gt_planner.yaml (il planner li evita nel
+         validity checker dell'RRT). Interni, lontani dai goal.
+         ==================================================================== -->
+
+    <!-- Box centrale -->
+    <model name="obs_box_1">
+      <static>true</static>
+      <pose>1.5 0.0 0.3 0 0 0</pose>
+      <link name="link">
+        <collision name="c"><geometry><box><size>0.6 0.6 0.6</size></box></geometry></collision>
+        <visual name="v"><geometry><box><size>0.6 0.6 0.6</size></box></geometry>
+          <material><ambient>0.4 0.4 0.45 1</ambient><diffuse>0.5 0.5 0.55 1</diffuse></material>
+        </visual>
+      </link>
+    </model>
+
+    <!-- Muro (parallelepipedo lungo in y) -->
+    <model name="obs_wall_1">
+      <static>true</static>
+      <pose>-1.5 1.0 0.4 0 0 0</pose>
+      <link name="link">
+        <collision name="c"><geometry><box><size>0.3 2.0 0.8</size></box></geometry></collision>
+        <visual name="v"><geometry><box><size>0.3 2.0 0.8</size></box></geometry>
+          <material><ambient>0.45 0.4 0.35 1</ambient><diffuse>0.6 0.5 0.4 1</diffuse></material>
+        </visual>
+      </link>
+    </model>
+
+    <!-- Palo 1 -->
+    <model name="obs_pole_1">
+      <static>true</static>
+      <pose>-1.0 -1.5 0.5 0 0 0</pose>
+      <link name="link">
+        <collision name="c"><geometry><cylinder><radius>0.25</radius><length>1.0</length></cylinder></geometry></collision>
+        <visual name="v"><geometry><cylinder><radius>0.25</radius><length>1.0</length></cylinder></geometry>
+          <material><ambient>0.2 0.3 0.5 1</ambient><diffuse>0.3 0.4 0.6 1</diffuse></material>
+        </visual>
+      </link>
+    </model>
+
+    <!-- Palo 2 -->
+    <model name="obs_pole_2">
+      <static>true</static>
+      <pose>1.5 -2.0 0.5 0 0 0</pose>
+      <link name="link">
+        <collision name="c"><geometry><cylinder><radius>0.25</radius><length>1.0</length></cylinder></geometry></collision>
+        <visual name="v"><geometry><cylinder><radius>0.25</radius><length>1.0</length></cylinder></geometry>
+          <material><ambient>0.2 0.3 0.5 1</ambient><diffuse>0.3 0.4 0.6 1</diffuse></material>
+        </visual>
+      </link>
+    </model>
   </world>
 </sdf>

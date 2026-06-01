@@ -43,8 +43,9 @@ collision_margin: 0.20       # margine extra sul vincolo Eq.2 (piu' alto = schiv
 # ---- Tempistiche ----
 replan_dt: 0.10              # Delta t  (Table 2): periodo di replanning
 integrator_dt: 0.05          # dt       (Table 2): passo integratore numerico
-planning_horizon: 3.5        # durata (s) delle traiettorie valutate
-                             # (piu' lungo = vede i conflitti prima = schiva prima)
+planning_horizon: 3.5        # finestra (s) di collisione dinamica + orizzonte
+                             # predizione attori (NON tronca piu' il path robot,
+                             # che ora e' full-to-goal). Piu' lungo = schiva prima.
 control_rate: 10.0           # Hz del loop (= 1/replan_dt)
 
 # ---- RRT control-based (Sect. 4.3.1, set di controlli Eq.8) ----
@@ -58,7 +59,9 @@ prop_min_hi: 0.65            # Gamma^min (estremo sup.)
 prop_max_lo: 0.75            # Gamma^max (estremo inf.)
 prop_max_hi: 1.25            # Gamma^max (estremo sup.)
 robot_num_actions: 16        # M_n  (Table 2: video=16, virtual=31). Abbassare per realtime.
-rrt_solve_time: 0.02         # budget OMPL (s) per ogni traiettoria generata
+rrt_solve_time: 0.06         # budget OMPL (s) per traiettoria. Full-to-goal:
+                             # alzare se goal lontani non vengono raggiunti
+                             # (path corto); abbassare per sim piu' veloce.
 
 # Limiti workspace per il sampling RRT (m). Devono contenere robot, goal e
 # traiettorie con margine: piu' larghi dei bound del mondo (+/-3.5) e dei
@@ -67,6 +70,23 @@ ws_min_x: -5.0
 ws_max_x: 5.0
 ws_min_y: -5.0
 ws_max_y: 5.0
+
+# ---- Ostacoli statici (X^obj) ----
+# DEVONO combaciare con i model statici in actor_collisions.world.
+# Il validity checker dell'RRT rifiuta gli stati dentro (ostacolo + agent_radius).
+#   box:      x,y centro, half_x,half_y semi-lati
+#   cylinder: x,y centro, radius
+static_obstacles:
+  - {type: box,      x: 1.5,  y: 0.0,  half_x: 0.30, half_y: 0.30}
+  - {type: box,      x: -1.5, y: 1.0,  half_x: 0.15, half_y: 1.00}
+  - {type: cylinder, x: -1.0, y: -1.5, radius: 0.25}
+  - {type: cylinder, x: 1.5,  y: -2.0, radius: 0.25}
+
+# Rileva a runtime anche ostacoli NON nel file (es. inseriti da Gazebo a mano):
+# qualunque model in /gazebo/model_states che non sia robot/attore/ground/sun
+# e non inizi per "obs_" viene trattato come cerchio di raggio default.
+obstacle_autodetect: true
+obstacle_default_radius: 0.40
 
 # ---- Predizione attori (umani) ----
 actor_num_actions: 5         # ipotesi di traiettoria per attore
