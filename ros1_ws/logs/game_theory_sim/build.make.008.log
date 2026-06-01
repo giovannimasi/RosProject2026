@@ -1,0 +1,9 @@
+[35m[1mScanning dependencies of target game_theory_planner_node[0m
+[ 33%] [32mBuilding CXX object CMakeFiles/game_theory_planner_node.dir/src/main_node.cpp.o[0m
+[01m[K/root/ros1_ws/src/game_theory_sim/src/main_node.cpp:[m[K In function ‘[01m[Kint main(int, char**)[m[K’:
+[01m[K/root/ros1_ws/src/game_theory_sim/src/main_node.cpp:27:33:[m[K [01;31m[Kerror: [m[Ka function-definition is not allowed here before ‘[01m[K{[m[K’ token
+   27 | int main(int argc, char** argv) [01;31m[K{[m[K
+      |                                 [01;31m[K^[m[K
+make[2]: *** [CMakeFiles/game_theory_planner_node.dir/build.make:63: CMakeFiles/game_theory_planner_node.dir/src/main_node.cpp.o] Error 1
+make[1]: *** [CMakeFiles/Makefile2:213: CMakeFiles/game_theory_planner_node.dir/all] Error 2
+make: *** [Makefile:141: all] Error 2

@@ -1,0 +1,20 @@
+<launch>
+  <arg name="model" default="$(env TURTLEBOT3_MODEL)" />
+
+  <include file="$(find gazebo_ros)/launch/empty_world.launch">
+    <arg name="world_name" value="$(find game_theory_sim)/worlds/actor_collisions.world"/>
+    <arg name="paused" value="false"/>
+    <arg name="use_sim_time" value="true"/>
+    <arg name="gui" value="true"/>
+  </include>
+
+  <group ns="tb3_0">
+    <param name="robot_description" command="$(find xacro)/xacro --inorder $(find turtlebot3_description)/urdf/turtlebot3_$(arg model).urdf.xacro" />
+    <node pkg="gazebo_ros" type="spawn_model" name="spawn_urdf_0" args="-urdf -model tb3_0 -x 0.0 -y 0.0 -z 0.0 -param robot_description" />
+  </group>
+
+  <group ns="tb3_1">
+    <param name="robot_description" command="$(find xacro)/xacro --inorder $(find turtlebot3_description)/urdf/turtlebot3_$(arg model).urdf.xacro" />
+    <node pkg="gazebo_ros" type="spawn_model" name="spawn_urdf_1" args="-urdf -model tb3_1 -x 8.0 -y 8.0 -z 0.0 -param robot_description" />
+  </group>
+</launch>

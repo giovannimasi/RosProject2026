@@ -1,0 +1,2 @@
+- setup-file:
+    local-name: /root/ros1_ws/devel/.private/game_theory_sim/setup.sh
