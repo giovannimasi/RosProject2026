@@ -1,0 +1,8 @@
+prefix=/root/ros1_ws/install
+
+Name: gazebo_random_actor
+Description: Description of gazebo_random_actor
+Version: 
+Cflags: 
+Libs: -L${prefix}/lib 
+Requires: 

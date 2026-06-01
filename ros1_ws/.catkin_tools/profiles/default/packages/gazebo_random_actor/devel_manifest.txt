@@ -1,0 +1,5 @@
+gazebo_random_actor
+/root/ros1_ws/devel/.private/gazebo_random_actor/lib/librandom_smooth_actor_plugin.so /root/ros1_ws/devel/lib/librandom_smooth_actor_plugin.so
+/root/ros1_ws/devel/.private/gazebo_random_actor/lib/pkgconfig/gazebo_random_actor.pc /root/ros1_ws/devel/lib/pkgconfig/gazebo_random_actor.pc
+/root/ros1_ws/devel/.private/gazebo_random_actor/share/gazebo_random_actor/cmake/gazebo_random_actorConfig.cmake /root/ros1_ws/devel/share/gazebo_random_actor/cmake/gazebo_random_actorConfig.cmake
+/root/ros1_ws/devel/.private/gazebo_random_actor/share/gazebo_random_actor/cmake/gazebo_random_actorConfig-version.cmake /root/ros1_ws/devel/share/gazebo_random_actor/cmake/gazebo_random_actorConfig-version.cmake

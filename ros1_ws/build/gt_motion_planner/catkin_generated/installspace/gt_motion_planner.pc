@@ -1,0 +1,8 @@
+prefix=/root/ros1_ws/install
+
+Name: gt_motion_planner
+Description: Description of gt_motion_planner
+Version: 0.0.0
+Cflags: 
+Libs: -L${prefix}/lib 
+Requires: 

@@ -1,0 +1,4 @@
+[35m[1mScanning dependencies of target random_smooth_actor_plugin[0m
+[ 50%] [32mBuilding CXX object CMakeFiles/random_smooth_actor_plugin.dir/src/random_smooth_actor_plugin.cc.o[0m
+[100%] [32m[1mLinking CXX shared library /root/ros1_ws/devel/.private/gazebo_random_actor/lib/librandom_smooth_actor_plugin.so[0m
+[100%] Built target random_smooth_actor_plugin

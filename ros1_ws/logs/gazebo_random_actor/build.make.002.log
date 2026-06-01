@@ -1,0 +1,9 @@
+[35m[1mScanning dependencies of target random_smooth_actor_plugin[0m
+[ 50%] [32mBuilding CXX object CMakeFiles/random_smooth_actor_plugin.dir/src/random_smooth_actor_plugin.cc.o[0m
+[01m[K/root/ros1_ws/src/gazebo_random_actor/src/random_smooth_actor_plugin.cc:6:10:[m[K [01;31m[Kfatal error: [m[Kgazebo/common/TrajectoryInfo.hh: No such file or directory
+    6 | #include [01;31m[K<gazebo/common/TrajectoryInfo.hh>[m[K
+      |          [01;31m[K^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~[m[K
+compilation terminated.
+make[2]: *** [CMakeFiles/random_smooth_actor_plugin.dir/build.make:63: CMakeFiles/random_smooth_actor_plugin.dir/src/random_smooth_actor_plugin.cc.o] Error 1
+make[1]: *** [CMakeFiles/Makefile2:1261: CMakeFiles/random_smooth_actor_plugin.dir/all] Error 2
+make: *** [Makefile:141: all] Error 2

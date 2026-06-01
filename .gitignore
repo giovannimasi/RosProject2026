@@ -1,1 +1,2 @@
 docker-compose.override.yml
+ros1_ws/logs/
