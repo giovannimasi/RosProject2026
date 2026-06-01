@@ -16,6 +16,8 @@ RUN apt-get update && apt-get install -y \
     ros-noetic-gazebo-ros-control \
     ros-noetic-teleop-twist-keyboard \
     ros-noetic-tf ros-noetic-tf2 \
+    ros-noetic-ompl \
+    ros-noetic-visualization-msgs \
     && rm -rf /var/lib/apt/lists/*
 
 # 3. Pacchetti Python

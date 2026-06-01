@@ -1,40 +1,81 @@
+# ============================================================================
+# Game Theoretic Motion Planner  -  parametri (Turnwald & Wollherr 2019)
+# Colonna "virtual" di Table 2 (studio Motion Planning Among Humans, Sect. 6).
+# ============================================================================
+
 turtlebot_name: "turtlebot3_waffle_pi"
 
+# Attori = "umani" predetti dal planner (si muovono autonomamente).
 actor_names:
   - "actor"
   - "actor_2"
   - "actor_3_group_L"
   - "actor_4_group_R"
 
+# Coppie che camminano in gruppo: mai pianificare di passare in mezzo.
+# Ogni coppia = [membro_sinistro, membro_destro].
+group_pairs:
+  - ["actor_3_group_L", "actor_4_group_R"]
+
+# Larghezza del corridoio (m) attorno al segmento che unisce i due membri
+# del gruppo: una traiettoria robot che entra qui ha costo infinito.
+group_corridor_half_width: 0.70
+
+# ---- Goal (rotazione di waypoint) ----
 goals:
-  - [3.5, 0.0]
-  - [3.5, 3.5]
-  - [-3.5, 3.5]
-  - [-3.5, -3.5]
-  - [3.5, -3.5]
-
+  - [0.0, 3.0]
+  - [3.0, 3.0]
+  - [3.0, -3.0]
+  - [-3.0, -3.0]
+  - [-3.0, 3.0]
 loop_goals: true
+goal_tolerance: 0.30
 
-interaction_radius: 5.0
-agent_radius: 0.375
-collision_margin: 0.15
+# Dimensione regione di goal X^goal (Table 2 virtual: 0.30 x 0.50 m).
+goal_region_x: 0.30
+goal_region_y: 0.50
 
-dt: 0.1
-planning_horizon: 2.0
-control_rate: 10.0
+# ---- Interazione / collisioni ----
+interaction_radius: 5.0      # solo attori entro questo raggio entrano nel gioco
+agent_radius: 0.375          # R  (Table 2 virtual)
+collision_margin: 0.20       # margine extra sul vincolo Eq.2 (piu' alto = schiva prima)
 
-robot_v: 0.16
-robot_w: 0.65
+# ---- Tempistiche ----
+replan_dt: 0.10              # Delta t  (Table 2): periodo di replanning
+integrator_dt: 0.05          # dt       (Table 2): passo integratore numerico
+planning_horizon: 3.5        # durata (s) delle traiettorie valutate
+                             # (piu' lungo = vede i conflitti prima = schiva prima)
+control_rate: 10.0           # Hz del loop (= 1/replan_dt)
 
-actor_turn_rate: 0.25
+# ---- RRT control-based (Sect. 4.3.1, set di controlli Eq.8) ----
+robot_v: 0.22                # v_n  velocita lineare (specifica agente; waffle ~0.22)
+w_min: 0.10                  # w_n^min  (rad/s)
+w_max: 0.55                  # w_n^max  (rad/s)
+curvature_factor: 0.5        # c  (Eq.8)
+# Range da cui estrarre i bound della durata di propagazione delta_t:
+prop_min_lo: 0.35            # Gamma^min (estremo inf.)
+prop_min_hi: 0.65            # Gamma^min (estremo sup.)
+prop_max_lo: 0.75            # Gamma^max (estremo inf.)
+prop_max_hi: 1.25            # Gamma^max (estremo sup.)
+robot_num_actions: 16        # M_n  (Table 2: video=16, virtual=31). Abbassare per realtime.
+rrt_solve_time: 0.02         # budget OMPL (s) per ogni traiettoria generata
 
-goal_weight: 2.0
-heading_weight: 0.2
-stop_cost: 20.0
+# Limiti workspace per il sampling RRT (m). Devono contenere robot, goal e
+# traiettorie con margine: piu' larghi dei bound del mondo (+/-3.5) e dei
+# goal (+/-3), altrimenti uno stato di start fuori bound fa fallire l'RRT.
+ws_min_x: -5.0
+ws_max_x: 5.0
+ws_min_y: -5.0
+ws_max_y: 5.0
 
-goal_tolerance: 0.25
-
+# ---- Predizione attori (umani) ----
+actor_num_actions: 5         # ipotesi di traiettoria per attore
+actor_turn_rate: 0.25        # rad/s ventaglio di sterzata predetto
 min_actor_speed: 0.05
-max_actor_speed: 1.2
+max_actor_speed: 1.20
+default_actor_speed: 0.55    # usato se la velocita stimata e troppo bassa
 
+# ---- Debug / visualizzazione ----
 enable_debug: true
+publish_markers: true
+marker_frame: "odom"         # frame in cui sono espressi /gazebo/model_states

@@ -1,4 +1,7 @@
 <launch>
+  <!-- Avvia rviz per visualizzare le traiettorie valutate / scelte? -->
+  <arg name="rviz" default="true"/>
+
   <node pkg="gt_motion_planner"
         type="gt_planner_node"
         name="gt_planner_node"
@@ -7,4 +10,10 @@
     <rosparam file="$(find gt_motion_planner)/config/gt_planner.yaml" command="load"/>
 
   </node>
+
+  <node if="$(arg rviz)"
+        pkg="rviz"
+        type="rviz"
+        name="gt_rviz"
+        args="-d $(find gt_motion_planner)/config/gt_planner.rviz"/>
 </launch>

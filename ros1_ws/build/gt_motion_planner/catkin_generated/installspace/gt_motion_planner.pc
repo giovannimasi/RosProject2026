@@ -5,4 +5,4 @@ Description: Description of gt_motion_planner
 Version: 0.0.0
 Cflags: 
 Libs: -L${prefix}/lib 
-Requires: 
+Requires: roscpp geometry_msgs gazebo_msgs visualization_msgs tf
