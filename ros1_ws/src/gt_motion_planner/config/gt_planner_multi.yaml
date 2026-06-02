@@ -1,0 +1,80 @@
+# ============================================================================
+# Config MULTI-ROBOT (due turtlebot controllati, gioco congiunto - paper §4.3.3)
+# ============================================================================
+
+# Robot controllati. name = nome del model in /gazebo/model_states.
+robots:
+  - name: "tb1"
+    cmd_topic: "/tb1/cmd_vel"
+    scan_topic: "/tb1/scan"
+    loop_goals: true
+    goals:
+      - [3.0, 3.0]
+      - [-3.0, -3.0]
+  - name: "tb2"
+    cmd_topic: "/tb2/cmd_vel"
+    scan_topic: "/tb2/scan"
+    loop_goals: true
+    goals:
+      - [-3.0, -3.0]
+      - [3.0, 3.0]
+
+# Nessun attore in questo test (solo robot controllati).
+actor_names: []
+group_pairs: []
+
+goal_tolerance: 0.30
+goal_region_x: 0.30
+goal_region_y: 0.50
+
+# ---- Interazione / collisioni ----
+interaction_radius: 6.0
+agent_radius: 0.375
+collision_margin: 0.20
+
+# ---- Tempistiche ----
+replan_dt: 0.10
+integrator_dt: 0.05
+planning_horizon: 3.5
+control_rate: 10.0
+
+# ---- RRT control-based ----
+robot_v: 0.22
+w_min: 0.10
+w_max: 0.55
+curvature_factor: 0.5
+prop_min_lo: 0.35
+prop_min_hi: 0.65
+prop_max_lo: 0.75
+prop_max_hi: 1.25
+robot_num_actions: 12        # piu' basso: 2 robot = gioco piu' grande
+rrt_solve_time: 0.05
+
+ws_min_x: -5.0
+ws_max_x: 5.0
+ws_min_y: -5.0
+ws_max_y: 5.0
+
+# ---- Ostacoli statici ----
+# NESSUNA conoscenza preventiva: l'algoritmo NON conosce gli ostacoli a priori.
+# Tutti (sia quelli del world sia quelli aggiunti a runtime) sono rilevati
+# ESCLUSIVAMENTE dal lidar (sezione sotto).
+static_obstacles: []
+obstacle_autodetect: false
+obstacle_default_radius: 0.40
+
+# ---- Layer lidar (per-robot, unito in mappa condivisa) ----
+use_lidar: true
+lidar_grid_res: 0.10
+lidar_inflation: 0.50
+lidar_actor_filter_radius: 0.60   # filtra punti su robot/attori (dinamici)
+static_margin: 0.12
+ego_bubble: 0.35
+
+goal_block_penalty: 100.0
+hysteresis_weight: 2.5
+
+# ---- Debug / visualizzazione ----
+enable_debug: true
+publish_markers: true
+marker_frame: "world"        # markers in frame mondo (model_states)

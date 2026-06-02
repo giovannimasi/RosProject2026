@@ -88,6 +88,36 @@ static_obstacles:
 obstacle_autodetect: true
 obstacle_default_radius: 0.40
 
+# ---- Layer lidar (in AGGIUNTA agli oggetti) ----
+# Il robot evita anche i punti /scan reali: cattura la geometria vera (es.
+# spigoli di un parallelepipedo) che il cerchio dell'oggetto non copre.
+# I punti vicini agli attori vengono scartati (restano agenti dinamici).
+use_lidar: true
+scan_topic: "/scan"
+lidar_grid_res: 0.10            # risoluzione griglia di occupazione (m)
+lidar_inflation: 0.50          # gonfiaggio attorno a ogni punto (agent_radius+static_margin)
+lidar_actor_filter_radius: 0.60 # punti entro questo raggio da un attore = scartati
+
+# Margine di sicurezza statico (oggetti + lidar). Separato dal collision_margin
+# (dinamico) cosi' si puo' tarare senza intrappolare il robot.
+static_margin: 0.12
+
+# Ego-bubble: disco (m) attorno alla posa attuale dove gli ostacoli NON
+# bloccano. Garantisce start RRT valido e permette di uscire da spazi stretti
+# (evita il deadlock "no valid initial states"). Tienilo >~ agent_radius.
+ego_bubble: 0.35
+
+# Penalita' alla stima di distanza residua al goal se la retta end->goal
+# attraversa un ostacolo (evita che path corti puntati sull'ostacolo, con
+# stima Euclidea ottimistica, risultino economici e vengano scelti).
+goal_block_penalty: 100.0
+
+# Isteresi: penalizza il cambio di "lato"/omotopia rispetto alla traiettoria
+# scelta al tick precedente. Senza, l'RRT casuale fa scegliere a ogni tick il
+# lato piu' corto del momento -> zig-zag che non aggira l'ostacolo.
+# Piu' alto = piu' commit a un lato. Troppo alto = lento a correggere.
+hysteresis_weight: 3.5
+
 # ---- Predizione attori (umani) ----
 actor_num_actions: 5         # ipotesi di traiettoria per attore
 actor_turn_rate: 0.25        # rad/s ventaglio di sterzata predetto

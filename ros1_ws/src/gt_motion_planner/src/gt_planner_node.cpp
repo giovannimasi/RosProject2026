@@ -25,10 +25,14 @@
 
 #include <gazebo_msgs/ModelStates.h>
 #include <geometry_msgs/Twist.h>
+#include <sensor_msgs/LaserScan.h>
 #include <visualization_msgs/Marker.h>
 #include <visualization_msgs/MarkerArray.h>
 
 #include <tf/tf.h>
+#include <tf/transform_listener.h>
+
+#include <boost/bind.hpp>
 
 #include <ompl/base/spaces/SE2StateSpace.h>
 #include <ompl/control/SimpleSetup.h>
@@ -43,6 +47,7 @@
 #include <map>
 #include <random>
 #include <string>
+#include <unordered_set>
 #include <vector>
 
 namespace ob = ompl::base;
@@ -100,12 +105,45 @@ struct AgentActions
   std::vector<Action> actions;
 };
 
+// Un robot CONTROLLATO dal planner (agente controllabile, paper §4.3.3).
+// Ogni robot ha: goal propri, publisher cmd, scan lidar, e stato di
+// pianificazione per-robot (ego/escape, isteresi, memorized).
+struct ControlledRobot
+{
+  std::string name;            // nome del model in /gazebo/model_states
+  std::string cmd_topic;
+  std::string scan_topic;
+  std::vector<Goal> goals;
+  size_t goal_idx{0};
+  bool loop_goals{true};
+  bool final_reached{false};
+  double goal_x{0.0};
+  double goal_y{0.0};
+
+  State state;
+  bool have_state{false};
+
+  ros::Publisher cmd_pub;
+  ros::Subscriber scan_sub;
+  sensor_msgs::LaserScan scan;
+  bool have_scan{false};
+
+  // contesto di pianificazione per-robot
+  bool escape{false};
+  std::vector<State> prev_traj;
+  bool have_prev{false};
+  double mem_v{0.0};
+  double mem_w{0.0};
+  bool have_mem{false};
+};
+
 // Memoria di un equilibrio (per il ragionamento 4.3.4): per ciascun attore
 // la traiettoria che quell'equilibrio assumeva.
 struct EqRecord
 {
   size_t row{0};
   double robot_cost{0.0};
+  std::vector<State> robot_traj;
   std::map<std::string, std::vector<State>> actor_traj;
 };
 
@@ -161,10 +199,21 @@ public:
     pnh.param<double>("goal_tolerance", goal_tolerance_, 0.30);
     pnh.param<double>("goal_region_x", goal_region_x_, 0.30);
     pnh.param<double>("goal_region_y", goal_region_y_, 0.50);
-    LoadGoals(pnh);
     LoadObstacles(pnh);
     pnh.param<bool>("obstacle_autodetect", obstacle_autodetect_, true);
     pnh.param<double>("obstacle_default_radius", obstacle_default_radius_, 0.40);
+
+    // layer lidar (in aggiunta agli oggetti): evita i punti /scan reali
+    pnh.param<bool>("use_lidar", use_lidar_, true);
+    pnh.param<double>("lidar_grid_res", lidar_grid_res_, 0.10);
+    pnh.param<double>("static_margin", static_margin_, 0.12);
+    pnh.param<double>("lidar_inflation", lidar_inflation_, agent_radius_ + static_margin_);
+    pnh.param<double>("lidar_actor_filter_radius", lidar_actor_filter_radius_, 0.60);
+    pnh.param<std::string>("scan_topic", scan_topic_, "/scan");
+    pnh.param<double>("ego_bubble", ego_bubble_, 0.35);
+
+    pnh.param<double>("goal_block_penalty", goal_block_penalty_, 100.0);
+    pnh.param<double>("hysteresis_weight", hysteresis_weight_, 2.5);
 
     pnh.param<double>("interaction_radius", interaction_radius_, 5.0);
     pnh.param<double>("agent_radius", agent_radius_, 0.375);
@@ -205,17 +254,20 @@ public:
 
     SetupOmpl();
 
+    SetupRobots(pnh);
+
     model_sub_ = nh_.subscribe("/gazebo/model_states", 1,
                                &GameTheoryPlannerNode::ModelStatesCallback, this);
-    cmd_pub_ = nh_.advertise<geometry_msgs::Twist>("/cmd_vel", 1);
     marker_pub_ = nh_.advertise<visualization_msgs::MarkerArray>("gt_planner/markers", 1);
 
     timer_ = nh_.createTimer(ros::Duration(1.0 / control_rate_),
                              &GameTheoryPlannerNode::TimerCallback, this);
 
-    ROS_INFO("[gt_planner] Avviato. robot=%s  M_n=%d  Delta_t=%.2f  R=%.3f",
-             turtlebot_name_.c_str(), robot_num_actions_, replan_dt_, agent_radius_);
-    ROS_INFO("[gt_planner] Goal iniziale: %.2f %.2f", goal_x_, goal_y_);
+    ROS_INFO("[gt_planner] Avviato. robot controllati=%zu  M_n=%d  Delta_t=%.2f  R=%.3f",
+             robots_.size(), robot_num_actions_, replan_dt_, agent_radius_);
+    for (const auto &r : robots_)
+      ROS_INFO("[gt_planner]   %s -> cmd=%s scan=%s goal0=[%.2f %.2f]",
+               r.name.c_str(), r.cmd_topic.c_str(), r.scan_topic.c_str(), r.goal_x, r.goal_y);
   }
 
 private:
@@ -266,17 +318,6 @@ private:
     }
   }
 
-  // pad/troncamento a num_traj_steps_ stati (per confronto a indici di tempo)
-  void NormalizeTrajectory(std::vector<State> &t) const
-  {
-    if (t.empty())
-      return;
-    if (static_cast<int>(t.size()) > num_traj_steps_ + 1)
-      t.resize(num_traj_steps_ + 1);
-    while (static_cast<int>(t.size()) < num_traj_steps_ + 1)
-      t.push_back(t.back());
-  }
-
   // -------------------- parametri da file --------------------
   void LoadGroupPairs(ros::NodeHandle &pnh)
   {
@@ -294,24 +335,100 @@ private:
     ROS_INFO("[gt_planner] Coppie di gruppo caricate: %zu", group_pairs_.size());
   }
 
-  void LoadGoals(ros::NodeHandle &pnh)
+  static double XmlNum(XmlRpc::XmlRpcValue &v)
+  {
+    if (v.getType() == XmlRpc::XmlRpcValue::TypeInt)
+      return static_cast<int>(v);
+    return static_cast<double>(v);
+  }
+
+  static std::vector<Goal> ParseGoals(XmlRpc::XmlRpcValue &list)
+  {
+    std::vector<Goal> out;
+    if (list.getType() != XmlRpc::XmlRpcValue::TypeArray)
+      return out;
+    for (int i = 0; i < list.size(); ++i)
+    {
+      if (list[i].getType() != XmlRpc::XmlRpcValue::TypeArray || list[i].size() < 2)
+        continue;
+      out.push_back({XmlNum(list[i][0]), XmlNum(list[i][1])});
+    }
+    return out;
+  }
+
+  // Costruisce la lista dei robot CONTROLLATI. Param "robots" (lista di struct
+  // {name, cmd_topic, scan_topic, goals, loop_goals}). In assenza, modalita'
+  // singolo robot retro-compatibile dai parametri legacy.
+  void SetupRobots(ros::NodeHandle &pnh)
   {
     XmlRpc::XmlRpcValue list;
-    if (pnh.getParam("goals", list) && list.getType() == XmlRpc::XmlRpcValue::TypeArray)
+    bool have_multi = pnh.getParam("robots", list) &&
+                      list.getType() == XmlRpc::XmlRpcValue::TypeArray && list.size() > 0;
+
+    if (have_multi)
     {
       for (int i = 0; i < list.size(); ++i)
       {
-        if (list[i].getType() != XmlRpc::XmlRpcValue::TypeArray || list[i].size() < 2)
+        if (list[i].getType() != XmlRpc::XmlRpcValue::TypeStruct)
           continue;
-        goals_.push_back({static_cast<double>(list[i][0]), static_cast<double>(list[i][1])});
+        ControlledRobot r;
+        r.name = list[i].hasMember("name") ? static_cast<std::string>(list[i]["name"]) : "robot";
+        r.cmd_topic = list[i].hasMember("cmd_topic") ? static_cast<std::string>(list[i]["cmd_topic"])
+                                                      : ("/" + r.name + "/cmd_vel");
+        r.scan_topic = list[i].hasMember("scan_topic") ? static_cast<std::string>(list[i]["scan_topic"])
+                                                       : ("/" + r.name + "/scan");
+        r.loop_goals = list[i].hasMember("loop_goals") ? static_cast<bool>(list[i]["loop_goals"]) : true;
+        if (list[i].hasMember("goals"))
+          r.goals = ParseGoals(list[i]["goals"]);
+        if (r.goals.empty())
+          r.goals.push_back({2.0, 0.0});
+        robots_.push_back(r);
       }
     }
-    if (goals_.empty())
-      goals_.push_back({2.0, 0.0});
+    else
+    {
+      // legacy: un solo robot
+      ControlledRobot r;
+      r.name = turtlebot_name_;
+      r.cmd_topic = "/cmd_vel";
+      r.scan_topic = scan_topic_;
+      r.loop_goals = loop_goals_;
+      XmlRpc::XmlRpcValue glist;
+      if (pnh.getParam("goals", glist))
+        r.goals = ParseGoals(glist);
+      if (r.goals.empty())
+        r.goals.push_back({2.0, 0.0});
+      robots_.push_back(r);
+    }
 
-    goal_x_ = goals_[0].x;
-    goal_y_ = goals_[0].y;
-    ROS_INFO("[gt_planner] Goal caricati: %zu", goals_.size());
+    // pubblisher cmd + subscriber scan per ogni robot
+    for (size_t i = 0; i < robots_.size(); ++i)
+    {
+      auto &r = robots_[i];
+      r.goal_x = r.goals[0].x;
+      r.goal_y = r.goals[0].y;
+      r.cmd_pub = nh_.advertise<geometry_msgs::Twist>(r.cmd_topic, 1);
+      if (use_lidar_)
+        r.scan_sub = nh_.subscribe<sensor_msgs::LaserScan>(
+          r.scan_topic, 1, boost::bind(&GameTheoryPlannerNode::ScanCb, this, _1, i));
+    }
+  }
+
+  void ScanCb(const sensor_msgs::LaserScan::ConstPtr &msg, size_t idx)
+  {
+    if (idx < robots_.size())
+    {
+      robots_[idx].scan = *msg;
+      robots_[idx].have_scan = true;
+    }
+  }
+
+  bool IsControlledRobotName(const std::string &nm) const
+  {
+    for (const auto &r : robots_)
+      if (r.name == nm)
+        return true;
+    return false;
   }
 
   void LoadObstacles(ros::NodeHandle &pnh)
@@ -353,7 +470,7 @@ private:
   // + quelli rilevati a runtime da /gazebo/model_states (cerchi, raggio
   // default). Qualunque model che non sia robot/attore/ground/sun e che non
   // inizi per "obs_" (gia' nel file) viene trattato come ostacolo statico.
-  void RefreshObstacles(const State &robot)
+  void RefreshObstacles()
   {
     obstacles_ = base_obstacles_;
     if (!obstacle_autodetect_)
@@ -362,7 +479,7 @@ private:
     for (size_t i = 0; i < latest_msg_.name.size(); ++i)
     {
       const std::string &nm = latest_msg_.name[i];
-      if (nm == turtlebot_name_ || nm == "ground_plane" || nm == "sun")
+      if (nm == "ground_plane" || nm == "sun" || IsControlledRobotName(nm))
         continue;
       if (std::find(actor_names_.begin(), actor_names_.end(), nm) != actor_names_.end())
         continue;
@@ -374,20 +491,187 @@ private:
       o.x = latest_msg_.pose[i].position.x;
       o.y = latest_msg_.pose[i].position.y;
       o.r = obstacle_default_radius_;
-
-      // solo se entro raggio di interazione (limita il carico)
-      if (std::hypot(o.x - robot.x, o.y - robot.y) <= interaction_radius_)
-        obstacles_.push_back(o);
+      obstacles_.push_back(o);
     }
   }
 
-  // true se una traiettoria entra in un ostacolo statico
+  // uno stato e' bloccato se dentro un oggetto modellato OPPURE vicino a un
+  // punto lidar (layer aggiuntivo che cattura la geometria reale, es. spigoli).
+  // blocco "crudo": dentro oggetto o vicino a punto lidar (senza ego-bubble)
+  bool StateBlockedRaw(double x, double y) const
+  {
+    return InsideObstacle(x, y) || IsLidarOccupied(x, y);
+  }
+
+  // distanza dal punto (x,y) all'ostacolo piu' vicino (lidar + oggetti).
+  // Usata in escape-mode per allontanarsi (massimizzare clearance).
+  double Clearance(double x, double y) const
+  {
+    double m = 1e9;
+    for (const auto &p : lidar_points_)
+      m = std::min(m, std::hypot(x - p.x, y - p.y));
+    for (const auto &o : obstacles_)
+    {
+      if (o.is_box)
+      {
+        double dx = std::max(0.0, std::abs(x - o.x) - o.hx);
+        double dy = std::max(0.0, std::abs(y - o.y) - o.hy);
+        m = std::min(m, std::hypot(dx, dy));
+      }
+      else
+        m = std::min(m, std::max(0.0, std::hypot(x - o.x, y - o.y) - o.r));
+    }
+    // include anche gli altri agenti (robot/attori): in escape la fuga deve
+    // allontanarsi da TUTTO, non puntare verso l'altro robot (-> deadlock).
+    for (const auto &a : other_agents_)
+      m = std::min(m, std::hypot(x - a.x, y - a.y));
+    return m;
+  }
+
+  bool StateBlocked(double x, double y) const
+  {
+    // ego-bubble CONDIZIONALE: si attiva SOLO se il robot e' gia' dentro una
+    // zona bloccata (intrappolato, es. ostacolo comparso sopra di lui). In quel
+    // caso si scava un disco attorno alla posa attuale per garantire start RRT
+    // valido e permettere la fuga.
+    // In condizioni normali (robot libero) la bolla NON e' attiva: cosi' i path
+    // verso l'ostacolo restano invalidi e il robot mantiene lo standoff invece
+    // di poterci entrare (la bolla sempre-attiva scavava un buco nell'ostacolo
+    // e ci faceva entrare).
+    if (escape_mode_ && std::hypot(x - ego_x_, y - ego_y_) < ego_bubble_)
+      return false;
+    return StateBlockedRaw(x, y);
+  }
+
+  // true se una traiettoria entra in un ostacolo (oggetto o punto lidar)
   bool TrajectoryHitsObstacle(const std::vector<State> &t) const
   {
     for (const auto &p : t)
-      if (InsideObstacle(p.x, p.y))
+      if (StateBlocked(p.x, p.y))
         return true;
     return false;
+  }
+
+  // true se il segmento (a)->(b) attraversa un ostacolo. Usato per capire se la
+  // stima Euclidea della distanza residua al goal e' valida (LoS libera) o
+  // ottimistica (passa dentro un ostacolo).
+  bool SegmentBlocked(double ax, double ay, double bx, double by) const
+  {
+    const double d = std::hypot(bx - ax, by - ay);
+    const int n = std::max(1, static_cast<int>(std::ceil(d / 0.10)));
+    for (int i = 0; i <= n; ++i)
+    {
+      const double t = static_cast<double>(i) / n;
+      if (StateBlocked(ax + t * (bx - ax), ay + t * (by - ay)))
+        return true;
+    }
+    return false;
+  }
+
+  // costo = lunghezza percorsa + stima del completamento fino al goal.
+  // Se la retta end->goal e' ostruita, la stima Euclidea e' ottimistica:
+  // si penalizza, altrimenti i path corti puntati sull'ostacolo sembrano
+  // economici e vengono scelti (-> bot dritto contro l'ostacolo).
+  double TrajectoryCost(const std::vector<State> &t) const
+  {
+    const double traveled = PathLength(t);
+    const State &end = t.back();
+    double remaining = std::hypot(goal_x_ - end.x, goal_y_ - end.y);
+    if (SegmentBlocked(end.x, end.y, goal_x_, goal_y_))
+      remaining += goal_block_penalty_;
+    return traveled + remaining;
+  }
+
+  // -------------------- layer lidar --------------------
+  void ScanCallback(const sensor_msgs::LaserScan::ConstPtr &msg)
+  {
+    latest_scan_ = *msg;
+    have_scan_ = true;
+  }
+
+  long CellKey(double x, double y) const
+  {
+    long ix = static_cast<long>(std::floor((x - ws_min_x_) / lidar_grid_res_));
+    long iy = static_cast<long>(std::floor((y - ws_min_y_) / lidar_grid_res_));
+    long nx = static_cast<long>((ws_max_x_ - ws_min_x_) / lidar_grid_res_) + 1;
+    return iy * nx + ix;
+  }
+
+  bool IsLidarOccupied(double x, double y) const
+  {
+    if (lidar_cells_.empty())
+      return false;
+    return lidar_cells_.find(CellKey(x, y)) != lidar_cells_.end();
+  }
+
+  // Ricostruisce la griglia di occupazione dai punti /scan (trasformati in
+  // frame mondo), gonfiati di lidar_inflation. Scarta i punti vicini agli
+  // attori: quelli restano agenti dinamici gestiti dal gioco, non ostacoli
+  // statici. Salva anche i punti grezzi per la visualizzazione.
+  // Griglia di occupazione statica CONDIVISA, costruita unendo gli /scan di
+  // TUTTI i robot. Ogni punto e' portato in frame mondo tramite la posa mondo
+  // del robot (da model_states) -> niente TF. I punti su agenti dinamici
+  // (robot + attori) vengono scartati: restano gestiti dal gioco.
+  void BuildLidarGrid(const std::vector<State> &dynamic_centers)
+  {
+    lidar_cells_.clear();
+    lidar_points_.clear();
+    if (!use_lidar_)
+      return;
+
+    const int rc = std::max(0, static_cast<int>(std::ceil(lidar_inflation_ / lidar_grid_res_)));
+    const double r2 = lidar_inflation_ * lidar_inflation_;
+    const long nx = static_cast<long>((ws_max_x_ - ws_min_x_) / lidar_grid_res_) + 1;
+
+    for (const auto &rb : robots_)
+    {
+      if (!rb.have_scan || !rb.have_state)
+        continue;
+
+      const auto &scan = rb.scan;
+      const double rx = rb.state.x, ry = rb.state.y, ryaw = rb.state.yaw;
+      const double cyaw = std::cos(ryaw), syaw = std::sin(ryaw);
+
+      for (size_t i = 0; i < scan.ranges.size(); ++i)
+      {
+        const double r = scan.ranges[i];
+        if (!std::isfinite(r) || r < scan.range_min || r > scan.range_max)
+          continue;
+
+        const double a = scan.angle_min + i * scan.angle_increment;
+        const double lx = r * std::cos(a);
+        const double ly = r * std::sin(a);
+        // punto del raggio in frame mondo (base_scan ~ base_link, offset ~6cm
+        // trascurabile vs risoluzione griglia)
+        const double px = rx + lx * cyaw - ly * syaw;
+        const double py = ry + lx * syaw + ly * cyaw;
+
+        // scarta punti su agenti dinamici (altri robot + attori)
+        bool on_dyn = false;
+        for (const auto &dc : dynamic_centers)
+          if (std::hypot(px - dc.x, py - dc.y) < lidar_actor_filter_radius_)
+          {
+            on_dyn = true;
+            break;
+          }
+        if (on_dyn)
+          continue;
+
+        lidar_points_.push_back({px, py, 0.0});
+
+        long cix = static_cast<long>(std::floor((px - ws_min_x_) / lidar_grid_res_));
+        long ciy = static_cast<long>(std::floor((py - ws_min_y_) / lidar_grid_res_));
+        for (int di = -rc; di <= rc; ++di)
+          for (int dj = -rc; dj <= rc; ++dj)
+          {
+            double cx = (cix + di) * lidar_grid_res_ + ws_min_x_;
+            double cy = (ciy + dj) * lidar_grid_res_ + ws_min_y_;
+            if (std::hypot(cx - px, cy - py) <= lidar_inflation_ + 1e-9 ||
+                (di * di + dj * dj) * lidar_grid_res_ * lidar_grid_res_ <= r2)
+              lidar_cells_.insert((ciy + dj) * nx + (cix + di));
+          }
+      }
+    }
   }
 
   // true se (px,py) e' dentro un ostacolo gonfiato del raggio agente
@@ -395,33 +679,35 @@ private:
   {
     for (const auto &o : obstacles_)
     {
+      const double inf = agent_radius_ + static_margin_;  // margine di sicurezza statico
       if (o.is_box)
       {
-        if (std::abs(px - o.x) <= o.hx + agent_radius_ &&
-            std::abs(py - o.y) <= o.hy + agent_radius_)
+        if (std::abs(px - o.x) <= o.hx + inf &&
+            std::abs(py - o.y) <= o.hy + inf)
           return true;
       }
-      else if (std::hypot(px - o.x, py - o.y) < o.r + agent_radius_)
+      else if (std::hypot(px - o.x, py - o.y) < o.r + inf)
         return true;
     }
     return false;
   }
 
-  void AdvanceGoal()
+  void AdvanceGoal(ControlledRobot &r)
   {
-    if (current_goal_idx_ + 1 < goals_.size())
-      ++current_goal_idx_;
-    else if (loop_goals_)
-      current_goal_idx_ = 0;
+    if (r.goal_idx + 1 < r.goals.size())
+      ++r.goal_idx;
+    else if (r.loop_goals)
+      r.goal_idx = 0;
     else
     {
-      final_goal_reached_ = true;
+      r.final_reached = true;
       return;
     }
-    goal_x_ = goals_[current_goal_idx_].x;
-    goal_y_ = goals_[current_goal_idx_].y;
-    ROS_INFO("[gt_planner] Nuovo goal %zu/%zu: %.2f %.2f",
-             current_goal_idx_ + 1, goals_.size(), goal_x_, goal_y_);
+    r.goal_x = r.goals[r.goal_idx].x;
+    r.goal_y = r.goals[r.goal_idx].y;
+    r.have_prev = false;  // nuovo goal: ridecide il lato senza isteresi
+    ROS_INFO("[gt_planner] [%s] nuovo goal %zu/%zu: %.2f %.2f",
+             r.name.c_str(), r.goal_idx + 1, r.goals.size(), r.goal_x, r.goal_y);
   }
 
   // ============================================================
@@ -484,7 +770,7 @@ private:
     ss_->setStateValidityChecker(
       [this](const ob::State *s) -> bool {
         const auto *se2 = s->as<ob::SE2StateSpace::StateType>();
-        return !InsideObstacle(se2->getX(), se2->getY());
+        return !StateBlocked(se2->getX(), se2->getY());
       });
 
     ss_->getSpaceInformation()->setPropagationStepSize(integrator_dt_);
@@ -584,31 +870,53 @@ private:
       // La collisione dinamica con gli attori resta limitata alla prima
       // finestra ~planning_horizon perche' le traiettorie predette degli
       // attori sono lunghe solo num_traj_steps_ (confronto ad indici di tempo).
-      const double traveled = PathLength(a.trajectory);
-      const double remaining =
-        std::hypot(goal_x_ - a.trajectory.back().x, goal_y_ - a.trajectory.back().y);
-      a.cost = traveled + remaining;
+      a.cost = TrajectoryCost(a.trajectory);
 
       actions.push_back(a);
     }
 
-    // azione memorizzata: epsilon* del passo precedente, ri-radicata sullo stato
-    // attuale del robot  (Sect. 4.3.3 "il gioco ricorda la combinazione vincente").
-    if (have_memorized_robot_)
+    // Azioni fallback deterministiche (set di controlli Eq.8), aggiunte SOLO se
+    // l'RRT non ha prodotto nessuna traiettoria: garantiscono movimento (evita
+    // n=2/stallo) senza competere coi path full-to-goal in condizioni normali
+    // (altrimenti gli archi corti, col costo ~lineare, vincerebbero sempre).
+    if (actions.empty())
+    {
+      auto add_arc = [&](double v, double w, const std::string &nm) {
+        Action a;
+        a.v_cmd = v;
+        a.w_cmd = w;
+        a.name = nm;
+        State s = robot;
+        a.trajectory.push_back(s);
+        for (int k = 0; k < num_traj_steps_; ++k)
+        {
+          s = StepUnicycle(s, v, w, integrator_dt_);
+          a.trajectory.push_back(s);
+        }
+        a.cost = TrajectoryCost(a.trajectory);
+        actions.push_back(a);
+      };
+      const double W = w_max_, c = curvature_factor_;
+      add_arc(robot_v_, 0.0, "arc_fwd");
+      add_arc(robot_v_, W, "arc_L");
+      add_arc(robot_v_, -W, "arc_R");
+      add_arc(robot_v_, c * W, "arc_sL");
+      add_arc(robot_v_, -c * W, "arc_sR");
+    }
+
+    // azione memorizzata (Sect. 4.3.3 "il gioco ricorda la combinazione
+    // vincente"): si rioffre la TRAIETTORIA epsilon* scelta al tick precedente
+    // (path full-to-goal gia' valido), NON un replay del comando (v,w) che
+    // produrrebbe spirali o, se il precedente era stop, un path fermo a costo
+    // minimo -> congelamento. Saltata se il precedente non si muoveva.
+    if (have_memorized_robot_ && std::abs(memorized_v_) > 1e-3 && prev_robot_traj_.size() > 1)
     {
       Action a;
       a.name = "memorized";
       a.v_cmd = memorized_v_;
       a.w_cmd = memorized_w_;
-      State s = robot;
-      a.trajectory.push_back(s);
-      for (int k = 0; k < num_traj_steps_; ++k)
-      {
-        s = StepUnicycle(s, memorized_v_, memorized_w_, integrator_dt_);
-        a.trajectory.push_back(s);
-      }
-      a.cost = PathLength(a.trajectory) +
-               std::hypot(goal_x_ - a.trajectory.back().x, goal_y_ - a.trajectory.back().y);
+      a.trajectory = prev_robot_traj_;
+      a.cost = TrajectoryCost(a.trajectory);
       actions.push_back(a);
     }
 
@@ -630,6 +938,14 @@ private:
     MarkGroupBlocked(actions);
     for (auto &a : actions)
       a.obstacle_blocked = TrajectoryHitsObstacle(a.trajectory);
+
+    // ESCAPE MODE: il robot e' dentro una zona bloccata -> obiettivo non e'
+    // raggiungere il goal ma ALLONTANARSI dall'ostacolo. Costo = -clearance
+    // dell'endpoint (piu' lontano = meglio). Cosi' non punta verso l'ostacolo
+    // e non resta fermo (stand_still ha clearance bassa -> costo alto).
+    if (escape_mode_)
+      for (auto &a : actions)
+        a.cost = -Clearance(a.trajectory.back().x, a.trajectory.back().y);
 
     return actions;
   }
@@ -917,6 +1233,7 @@ private:
       EqRecord e;
       e.row = r;
       e.robot_cost = costs[r][0];
+      e.robot_traj = agents[0].actions[alloc[r][0]].trajectory;
       for (size_t i = 1; i < agents.size(); ++i)  // i=0 e' il robot
         e.actor_traj[agents[i].name] = agents[i].actions[alloc[r][i]].trajectory;
       recs.push_back(e);
@@ -1010,11 +1327,12 @@ private:
       }
       if (cnt > 0)
         score /= cnt;
-      // a parita' di somiglianza, preferisci costo robot minore
-      if (score < best_res - 1e-6 ||
-          (std::abs(score - best_res) <= 1e-6 && ce.robot_cost < best_cost))
+      // + isteresi: preferisci il lato gia' scelto (evita lo zig-zag)
+      double total = score + HysteresisPenalty(ce.robot_traj);
+      if (total < best_res - 1e-6 ||
+          (std::abs(total - best_res) <= 1e-6 && ce.robot_cost < best_cost))
       {
-        best_res = score;
+        best_res = total;
         best_cost = ce.robot_cost;
         best_row = ce.row;
       }
@@ -1022,16 +1340,54 @@ private:
     return best_row;
   }
 
+  // penalita' di isteresi: scoraggia il cambio di "lato"/omotopia rispetto alla
+  // traiettoria scelta al tick precedente. Senza, l'RRT casuale fa scegliere a
+  // ogni iterazione il lato piu' corto del momento -> cammino a zig-zag che non
+  // aggira l'ostacolo da nessun lato.
+  // direzione INIZIALE (~1s) della traiettoria: distingue il "lato" (sx/dx)
+  // della manovra di aggiramento, che il versore primo->ultimo NON cattura
+  // (entrambi i lati finiscono verso il goal -> stessa direzione globale).
+  void EarlyDir(const std::vector<State> &t, double &dx, double &dy) const
+  {
+    dx = 0.0;
+    dy = 0.0;
+    if (t.size() < 2)
+      return;
+    size_t ke = std::min(t.size() - 1,
+                         static_cast<size_t>(std::max(1, static_cast<int>(std::round(1.0 / integrator_dt_)))));
+    double ex = t[ke].x - t[0].x;
+    double ey = t[ke].y - t[0].y;
+    double n = std::hypot(ex, ey);
+    if (n > 1e-6)
+    {
+      dx = ex / n;
+      dy = ey / n;
+    }
+  }
+
+  double HysteresisPenalty(const std::vector<State> &traj) const
+  {
+    if (!have_prev_robot_traj_ || escape_mode_)
+      return 0.0;
+    double ax, ay, bx, by;
+    EarlyDir(traj, ax, ay);
+    EarlyDir(prev_robot_traj_, bx, by);
+    return hysteresis_weight_ * std::hypot(ax - bx, ay - by);
+  }
+
   size_t LowestRobotCostRow(const std::vector<EqRecord> &eqs) const
   {
     size_t best = eqs.front().row;
-    double bc = eqs.front().robot_cost;
+    double bs = std::numeric_limits<double>::max();
     for (const auto &e : eqs)
-      if (e.robot_cost < bc)
+    {
+      double s = e.robot_cost + HysteresisPenalty(e.robot_traj);
+      if (s < bs)
       {
-        bc = e.robot_cost;
+        bs = s;
         best = e.row;
       }
+    }
     return best;
   }
 
@@ -1064,7 +1420,8 @@ private:
                       const std::vector<size_t> &pareto,
                       const std::vector<std::vector<int>> &alloc,
                       size_t selected_row,
-                      bool valid)
+                      bool valid,
+                      size_t n_controlled)
   {
     if (!publish_markers_)
       return;
@@ -1105,40 +1462,34 @@ private:
       arr.markers.push_back(m);
     };
 
-    // tutte le traiettorie robot valutate (grigio sottile) + costo come testo
-    for (const auto &a : agents[0].actions)
-    {
-      bool blocked = a.group_blocked;
-      make_line(a.trajectory, 0.02,
-                blocked ? 0.6 : 0.5, blocked ? 0.1 : 0.5, blocked ? 0.1 : 0.5,
-                0.5, "robot_actions");
-    }
+    // traiettorie valutate di TUTTI i robot controllati (grigio sottile)
+    for (size_t i = 0; i < n_controlled; ++i)
+      for (const auto &a : agents[i].actions)
+      {
+        bool blocked = a.group_blocked || a.obstacle_blocked;
+        make_line(a.trajectory, 0.02,
+                  blocked ? 0.6 : 0.5, blocked ? 0.1 : 0.5, blocked ? 0.1 : 0.5,
+                  0.5, "robot_actions");
+      }
 
     // predizioni attori (arancione sottile)
-    for (size_t i = 1; i < agents.size(); ++i)
+    for (size_t i = n_controlled; i < agents.size(); ++i)
       for (const auto &a : agents[i].actions)
         make_line(a.trajectory, 0.02, 1.0, 0.55, 0.0, 0.45, "actor_pred");
 
-    // equilibri di Nash (azzurro)
+    // equilibri di Nash (azzurro) - traiettoria del robot 0 come rappresentante
     for (size_t r : nash)
-    {
-      const auto &a = agents[0].actions[alloc[r][0]];
-      make_line(a.trajectory, 0.035, 0.1, 0.6, 1.0, 0.7, "nash");
-    }
+      make_line(agents[0].actions[alloc[r][0]].trajectory, 0.035, 0.1, 0.6, 1.0, 0.7, "nash");
 
-    // equilibri Pareto (blu piu' marcato)
+    // equilibri Pareto (blu)
     for (size_t r : pareto)
-    {
-      const auto &a = agents[0].actions[alloc[r][0]];
-      make_line(a.trajectory, 0.05, 0.0, 0.2, 1.0, 0.85, "pareto");
-    }
+      make_line(agents[0].actions[alloc[r][0]].trajectory, 0.05, 0.0, 0.2, 1.0, 0.85, "pareto");
 
-    // epsilon* scelto (verde spesso)
+    // epsilon* scelto: traiettoria di OGNI robot controllato (verde spesso)
     if (valid)
-    {
-      const auto &a = agents[0].actions[alloc[selected_row][0]];
-      make_line(a.trajectory, 0.09, 0.0, 1.0, 0.0, 1.0, "chosen");
-    }
+      for (size_t i = 0; i < n_controlled; ++i)
+        make_line(agents[i].actions[alloc[selected_row][i]].trajectory,
+                  0.09, 0.0, 1.0, 0.0, 1.0, "chosen");
 
     // corridoi di gruppo (rosso)
     for (const auto &pair : group_pairs_)
@@ -1185,13 +1536,78 @@ private:
       arr.markers.push_back(m);
     }
 
+    // punti lidar trattati come ostacolo (giallo)
+    if (!lidar_points_.empty())
+    {
+      visualization_msgs::Marker m;
+      m.header.frame_id = marker_frame_;
+      m.header.stamp = ros::Time::now();
+      m.ns = "lidar_obs";
+      m.id = id++;
+      m.type = visualization_msgs::Marker::POINTS;
+      m.action = visualization_msgs::Marker::ADD;
+      m.scale.x = 0.06;
+      m.scale.y = 0.06;
+      m.color.r = 1.0;
+      m.color.g = 0.9;
+      m.color.b = 0.0;
+      m.color.a = 0.9;
+      m.pose.orientation.w = 1.0;
+      for (const auto &p : lidar_points_)
+      {
+        geometry_msgs::Point pt;
+        pt.x = p.x;
+        pt.y = p.y;
+        pt.z = 0.1;
+        m.points.push_back(pt);
+      }
+      arr.markers.push_back(m);
+    }
+
     marker_pub_.publish(arr);
   }
 
   void PublishStop()
   {
     geometry_msgs::Twist c;
-    cmd_pub_.publish(c);
+    for (auto &r : robots_)
+      r.cmd_pub.publish(c);
+  }
+
+  // selezione congiunta dell'equilibrio (paper §4.3.3, tutti controllabili):
+  // tra gli equilibri candidati (Pareto o Nash) sceglie quello che minimizza la
+  // somma dei costi dei robot controllati + penalita' di isteresi per-robot.
+  size_t SelectJoint(const std::vector<EqRecord> &cur_eqs,
+                     const std::vector<AgentActions> &agents,
+                     const std::vector<std::vector<int>> &alloc,
+                     const std::vector<std::vector<double>> &costs,
+                     size_t n_controlled,
+                     const std::vector<size_t> &agent_robot_idx) const
+  {
+    size_t best_row = cur_eqs.front().row;
+    double best_score = std::numeric_limits<double>::max();
+    for (const auto &ce : cur_eqs)
+    {
+      double score = 0.0;
+      for (size_t ai = 0; ai < n_controlled; ++ai)
+      {
+        score += costs[ce.row][ai];
+        const ControlledRobot &rb = robots_[agent_robot_idx[ai]];
+        if (rb.have_prev && !rb.escape)
+        {
+          double ax, ay, bx, by;
+          EarlyDir(agents[ai].actions[alloc[ce.row][ai]].trajectory, ax, ay);
+          EarlyDir(rb.prev_traj, bx, by);
+          score += hysteresis_weight_ * std::hypot(ax - bx, ay - by);
+        }
+      }
+      if (score < best_score)
+      {
+        best_score = score;
+        best_row = ce.row;
+      }
+    }
+    return best_row;
   }
 
   // ============================================================
@@ -1202,74 +1618,105 @@ private:
     if (!have_model_states_)
       return;
 
-    State robot;
-    if (!ExtractState(latest_msg_, turtlebot_name_, robot))
+    // stati di tutti i robot controllati + centri dinamici (per filtrare lidar)
+    std::vector<State> dyn_centers;
+    size_t n_with_state = 0;
+    for (auto &r : robots_)
     {
-      ROS_WARN_THROTTLE(1.0, "[gt_planner] modello robot non trovato: %s", turtlebot_name_.c_str());
-      PublishStop();
-      return;
-    }
-
-    const double dist_goal = std::hypot(goal_x_ - robot.x, goal_y_ - robot.y);
-
-    if (final_goal_reached_)
-    {
-      ROS_INFO_THROTTLE(2.0, "[gt_planner] goal finale raggiunto.");
-      PublishStop();
-      return;
-    }
-    if (dist_goal < goal_tolerance_)
-    {
-      ROS_INFO("[gt_planner] goal %zu raggiunto (d=%.3f).", current_goal_idx_ + 1, dist_goal);
-      AdvanceGoal();
-      if (final_goal_reached_)
+      r.have_state = ExtractState(latest_msg_, r.name, r.state);
+      if (r.have_state)
       {
-        PublishStop();
-        return;
+        dyn_centers.push_back(r.state);
+        ++n_with_state;
       }
     }
+    if (n_with_state == 0)
+    {
+      ROS_WARN_THROTTLE(1.0, "[gt_planner] nessun robot trovato in model_states");
+      PublishStop();
+      return;
+    }
 
-    // aggiorna gli ostacoli statici (file + rilevati a runtime dal mondo)
-    RefreshObstacles(robot);
-
-    // ---- 1. costruzione agenti + action set ----
-    std::vector<AgentActions> agents;
-
-    AgentActions r;
-    r.name = turtlebot_name_;
-    r.state = robot;
-    r.is_robot = true;
-    r.actions = GenerateRobotActions(robot);
-    agents.push_back(r);
-
+    std::vector<State> actor_states;
     for (const std::string &an : actor_names_)
     {
       State as;
-      if (!ExtractState(latest_msg_, an, as))
-        continue;
-      if (Dist2D(robot, as) > interaction_radius_)
-        continue;
-      AgentActions aa;
-      aa.name = an;
-      aa.state = as;
-      aa.actions = GenerateActorPrediction(an, as);
-      agents.push_back(aa);
+      if (ExtractState(latest_msg_, an, as))
+      {
+        actor_states.push_back(as);
+        dyn_centers.push_back(as);
+      }
     }
 
-    if (agents[0].actions.empty())
+    // mappa statica condivisa: lidar unito (filtrando robot+attori) + oggetti
+    BuildLidarGrid(dyn_centers);
+    RefreshObstacles();
+
+    // ---- 1. per ogni robot: avanza goal + genera action set (context swap) ----
+    std::vector<AgentActions> agents;
+    std::vector<size_t> agent_robot_idx;
+
+    for (size_t ri = 0; ri < robots_.size(); ++ri)
     {
-      ROS_WARN_THROTTLE(1.0, "[gt_planner] nessuna traiettoria RRT generata. Stop.");
+      auto &r = robots_[ri];
+      if (!r.have_state)
+        continue;
+
+      if (!r.final_reached &&
+          std::hypot(r.goal_x - r.state.x, r.goal_y - r.state.y) < goal_tolerance_)
+      {
+        ROS_INFO("[gt_planner] [%s] goal raggiunto.", r.name.c_str());
+        AdvanceGoal(r);
+      }
+
+      // carica il contesto di pianificazione del robot nei membri usati da
+      // GenerateRobotActions / StateBlocked / cost
+      goal_x_ = r.goal_x;
+      goal_y_ = r.goal_y;
+      ego_x_ = r.state.x;
+      ego_y_ = r.state.y;
+      escape_mode_ = StateBlockedRaw(r.state.x, r.state.y);
+      r.escape = escape_mode_;
+
+      // altri agenti (altri robot + attori) per la clearance in escape
+      other_agents_.clear();
+      for (size_t rj = 0; rj < robots_.size(); ++rj)
+        if (rj != ri && robots_[rj].have_state)
+          other_agents_.push_back(robots_[rj].state);
+      for (const auto &as : actor_states)
+        other_agents_.push_back(as);
+      prev_robot_traj_ = r.prev_traj;
+      have_prev_robot_traj_ = r.have_prev;
+      memorized_v_ = r.mem_v;
+      memorized_w_ = r.mem_w;
+      have_memorized_robot_ = r.have_mem;
+
+      AgentActions ra;
+      ra.name = r.name;
+      ra.state = r.state;
+      ra.is_robot = true;
+      ra.actions = GenerateRobotActions(r.state);
+      if (ra.actions.empty())
+        continue;
+
+      agents.push_back(ra);
+      agent_robot_idx.push_back(ri);
+    }
+
+    if (agents.empty())
+    {
+      ROS_WARN_THROTTLE(1.0, "[gt_planner] nessuna azione robot generata. Stop.");
       PublishStop();
       return;
     }
+    const size_t n_controlled = agents.size();
 
-    // ---- 2-4. gioco statico: costi, Nash, Pareto ----
+    // ---- 2-4. gioco congiunto: costi, Nash, Pareto ----
     auto alloc = EnumerateAllocations(agents);
     auto costs = BuildCostTable(agents, alloc);
     auto nash = FindNash(agents, alloc, costs);
     auto pareto = ParetoFilter(nash, costs);
 
-    // ---- 5. coordinamento tra umani: scelta di epsilon* ----
     std::vector<EqRecord> cur_eqs;
     if (!pareto.empty())
       cur_eqs = BuildEqRecords(pareto, agents, alloc, costs);
@@ -1280,67 +1727,57 @@ private:
     bool valid = false;
     if (!cur_eqs.empty())
     {
-      selected_row = SelectEquilibrium(cur_eqs, agents);
+      selected_row = SelectJoint(cur_eqs, agents, alloc, costs, n_controlled, agent_robot_idx);
       valid = true;
     }
 
-    // ---- 6. comando + memorizzazione ----
-    geometry_msgs::Twist cmd;
-    std::string chosen_name = "none";
+    // ---- 6. dispatch comandi + memorizzazione per-robot ----
     if (valid)
     {
-      int ridx = alloc[selected_row][0];
-      const Action &act = agents[0].actions[ridx];
-      cmd.linear.x = act.v_cmd;
-      cmd.angular.z = act.w_cmd;
-      chosen_name = act.name;
+      for (size_t ai = 0; ai < n_controlled; ++ai)
+      {
+        auto &r = robots_[agent_robot_idx[ai]];
+        const Action &act = agents[ai].actions[alloc[selected_row][ai]];
 
-      memorized_v_ = act.v_cmd;
-      memorized_w_ = act.w_cmd;
-      have_memorized_ = true;
-      have_memorized_robot_ = true;
+        geometry_msgs::Twist cmd;
+        if (!r.final_reached)
+        {
+          cmd.linear.x = act.v_cmd;
+          cmd.angular.z = act.w_cmd;
+        }
+        r.cmd_pub.publish(cmd);
+
+        r.mem_v = act.v_cmd;
+        r.mem_w = act.w_cmd;
+        r.have_mem = true;
+        r.prev_traj = act.trajectory;
+        r.have_prev = true;
+      }
     }
     else
     {
       ROS_WARN_THROTTLE(0.5, "[gt_planner] nessun equilibrio Nash/Pareto. Stop.");
-    }
-    cmd_pub_.publish(cmd);
-
-    // ---- memoria per 4.3.4 al prossimo tick ----
-    prev_eqs_ = cur_eqs;
-    obs_prev_state_.clear();
-    for (size_t i = 1; i < agents.size(); ++i)
-      obs_prev_state_[agents[i].name] = agents[i].state;
-
-    // aggiorna stati attori per la stima di velocita' (una volta per tick)
-    ros::Time now = ros::Time::now();
-    for (size_t i = 1; i < agents.size(); ++i)
-    {
-      previous_actor_states_[agents[i].name] = agents[i].state;
-      previous_actor_times_[agents[i].name] = now;
+      PublishStop();
     }
 
-    // ---- RViz + log costi ----
-    PublishMarkers(agents, nash, pareto, alloc, selected_row, valid);
+    // ---- RViz + log ----
+    PublishMarkers(agents, nash, pareto, alloc, selected_row, valid, n_controlled);
 
     if (enable_debug_)
     {
-      ROS_INFO_THROTTLE(
-        0.5,
-        "[gt_planner] agenti=%zu azioni_robot=%zu alloc=%zu nash=%zu pareto=%zu "
-        "scelto=%s cmd=[%.2f %.2f] d_goal=%.2f",
-        agents.size(), agents[0].actions.size(), alloc.size(),
-        nash.size(), pareto.size(), chosen_name.c_str(),
-        cmd.linear.x, cmd.angular.z, dist_goal);
-
-      // costo di ogni traiettoria robot valutata
-      std::string line = "[gt_planner] costi azioni robot: ";
-      for (size_t i = 0; i < agents[0].actions.size(); ++i)
+      std::string line;
+      char buf[160];
+      std::snprintf(buf, sizeof(buf),
+                    "[gt_planner] controllati=%zu alloc=%zu nash=%zu pareto=%zu valid=%d | ",
+                    n_controlled, alloc.size(), nash.size(), pareto.size(), valid ? 1 : 0);
+      line += buf;
+      for (size_t ai = 0; ai < n_controlled; ++ai)
       {
-        const auto &a = agents[0].actions[i];
-        const char *flag = a.obstacle_blocked ? "(OBS)" : (a.group_blocked ? "(GRP)" : "");
-        char buf[96];
-        std::snprintf(buf, sizeof(buf), "%s=%.2f%s ", a.name.c_str(), a.cost, flag);
+        const auto &r = robots_[agent_robot_idx[ai]];
+        const Action &act = valid ? agents[ai].actions[alloc[selected_row][ai]] : agents[ai].actions.back();
+        std::snprintf(buf, sizeof(buf), "[%s n=%zu sel=%s cmd=%.2f/%.2f%s] ",
+                      r.name.c_str(), agents[ai].actions.size(), act.name.c_str(),
+                      act.v_cmd, act.w_cmd, r.escape ? " ESC" : "");
         line += buf;
       }
       ROS_INFO_THROTTLE(0.5, "%s", line.c_str());
@@ -1350,6 +1787,7 @@ private:
   // -------------------- membri ROS --------------------
   ros::NodeHandle nh_;
   ros::Subscriber model_sub_;
+  ros::Subscriber scan_sub_;
   ros::Publisher cmd_pub_;
   ros::Publisher marker_pub_;
   ros::Timer timer_;
@@ -1363,6 +1801,9 @@ private:
   oc::SimpleSetupPtr ss_;
   ompl::RNG rng_;
 
+  // -------------------- robot controllati --------------------
+  std::vector<ControlledRobot> robots_;
+
   // -------------------- parametri --------------------
   std::string turtlebot_name_;
   std::vector<std::string> actor_names_;
@@ -1372,6 +1813,28 @@ private:
   std::vector<Obstacle> obstacles_;        // live = file + rilevati a runtime
   bool obstacle_autodetect_{true};
   double obstacle_default_radius_{0.40};
+
+  // layer lidar
+  bool use_lidar_{true};
+  std::string scan_topic_{"/scan"};
+  double lidar_grid_res_{0.10};
+  double lidar_inflation_{0.50};
+  double lidar_actor_filter_radius_{0.60};
+  double static_margin_{0.12};
+  double ego_bubble_{0.35};
+  double ego_x_{0.0};
+  double ego_y_{0.0};
+  bool escape_mode_{false};
+  std::vector<State> other_agents_;   // altri agenti (per la clearance in escape)
+  sensor_msgs::LaserScan latest_scan_;
+  bool have_scan_{false};
+  std::unordered_set<long> lidar_cells_;
+  std::vector<State> lidar_points_;
+  tf::TransformListener tf_listener_;
+  double goal_block_penalty_{100.0};
+  double hysteresis_weight_{2.5};
+  std::vector<State> prev_robot_traj_;
+  bool have_prev_robot_traj_{false};
 
   std::vector<Goal> goals_;
   size_t current_goal_idx_{0};

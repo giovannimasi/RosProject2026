@@ -1,0 +1,37 @@
+<launch>
+  <arg name="model" default="$(env TURTLEBOT3_MODEL)"/>
+
+  <!-- Gazebo + mondo a due robot (no attori) -->
+  <include file="$(find gazebo_ros)/launch/empty_world.launch">
+    <arg name="world_name" value="$(find game_theory_sim)/worlds/two_robots.world"/>
+    <arg name="paused" value="false"/>
+    <arg name="use_sim_time" value="true"/>
+    <arg name="gui" value="true"/>
+  </include>
+
+  <!-- frame "world" per RViz (i markers del planner sono in frame mondo) -->
+  <node pkg="tf2_ros" type="static_transform_publisher" name="world_frame"
+        args="0 0 0 0 0 0 world map"/>
+
+  <!-- ===================== tb1 ===================== -->
+  <group ns="tb1">
+    <param name="robot_description"
+           command="$(find game_theory_sim)/scripts/gen_ns_urdf.sh $(arg model) tb1"/>
+    <node name="spawn_tb1" pkg="gazebo_ros" type="spawn_model"
+          args="-urdf -model tb1 -x -3.0 -y -3.0 -z 0.0 -Y 0.78 -param robot_description"/>
+    <node name="rsp_tb1" pkg="robot_state_publisher" type="robot_state_publisher">
+      <param name="tf_prefix" value="tb1"/>
+    </node>
+  </group>
+
+  <!-- ===================== tb2 ===================== -->
+  <group ns="tb2">
+    <param name="robot_description"
+           command="$(find game_theory_sim)/scripts/gen_ns_urdf.sh $(arg model) tb2"/>
+    <node name="spawn_tb2" pkg="gazebo_ros" type="spawn_model"
+          args="-urdf -model tb2 -x 3.0 -y 3.0 -z 0.0 -Y -2.36 -param robot_description"/>
+    <node name="rsp_tb2" pkg="robot_state_publisher" type="robot_state_publisher">
+      <param name="tf_prefix" value="tb2"/>
+    </node>
+  </group>
+</launch>

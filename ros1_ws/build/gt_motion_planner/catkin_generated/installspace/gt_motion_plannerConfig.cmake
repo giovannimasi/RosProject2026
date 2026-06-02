@@ -187,7 +187,7 @@ foreach(t ${gt_motion_planner_EXPORTED_TARGETS})
   endif()
 endforeach()
 
-set(depends "roscpp;geometry_msgs;gazebo_msgs;visualization_msgs;tf")
+set(depends "roscpp;geometry_msgs;gazebo_msgs;sensor_msgs;visualization_msgs;tf")
 foreach(depend ${depends})
   string(REPLACE " " ";" depend_list ${depend})
   # the package name of the dependency must be kept in a unique variable so that it is not overwritten in recursive calls

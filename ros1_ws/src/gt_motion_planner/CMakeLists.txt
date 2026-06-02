@@ -7,6 +7,7 @@ find_package(catkin REQUIRED COMPONENTS
   roscpp
   geometry_msgs
   gazebo_msgs
+  sensor_msgs
   visualization_msgs
   tf
 )
@@ -15,7 +16,7 @@ find_package(ompl REQUIRED)
 find_package(Boost REQUIRED COMPONENTS system)
 
 catkin_package(
-  CATKIN_DEPENDS roscpp geometry_msgs gazebo_msgs visualization_msgs tf
+  CATKIN_DEPENDS roscpp geometry_msgs gazebo_msgs sensor_msgs visualization_msgs tf
 )
 
 include_directories(

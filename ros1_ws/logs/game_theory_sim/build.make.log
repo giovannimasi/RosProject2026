@@ -1,4 +1,1 @@
-[35m[1mScanning dependencies of target game_theory_planner_node[0m
-[ 33%] [32mBuilding CXX object CMakeFiles/game_theory_planner_node.dir/src/main_node.cpp.o[0m
-[ 66%] [32m[1mLinking CXX executable /root/ros1_ws/devel/.private/game_theory_sim/lib/game_theory_sim/game_theory_planner_node[0m
 [100%] Built target game_theory_planner_node
