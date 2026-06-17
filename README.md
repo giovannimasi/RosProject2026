@@ -6,7 +6,7 @@ each other and with lidar-detected pedestrians, using Nash/Pareto equilibria.
 
 **Design & history:** see [`docs/`](docs/) —
 [Architecture](docs/ARCHITECTURE.md) (how the code works) and
-[Evolution](docs/EVOLUTION.md) (how we got here). Reference paper: `paper.md`.
+[Evolution](docs/EVOLUTION.md) (how we got here). Reference paper: [`docs/paper.md`](docs/paper.md).
 
 ---
 

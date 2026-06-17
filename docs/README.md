@@ -5,7 +5,7 @@ on Game-Theoretic Decision Making"** on ROS 1 Noetic + Gazebo (Docker), for
 TurtleBot3 Waffle Pi robots sharing space with simulated pedestrians.
 
 The planner lives in the `gt_motion_planner` package (`src/gt_planner_node.cpp`,
-C++). The reference paper converted to markdown is in [`../paper.md`](../paper.md).
+C++). The reference paper converted to markdown is in [`paper.md`](paper.md).
 
 ## Documents
 
