@@ -1,2 +1,4 @@
 docker-compose.override.yml
 ros1_ws/logs/
+
+human-like motion planning based on game theoretic decision making.pdf
