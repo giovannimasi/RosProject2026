@@ -41,12 +41,15 @@
 #include <ompl/util/Console.h>
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <functional>
 #include <limits>
 #include <map>
+#include <mutex>
 #include <random>
 #include <string>
+#include <unordered_map>
 #include <unordered_set>
 #include <vector>
 
@@ -83,6 +86,34 @@ struct Obstacle
   double hx{0.0};
   double hy{0.0};
   double r{0.0};
+};
+
+// Ostacolo dinamico rilevato dal lidar (NON noto a priori per nome): un pedone.
+// Stimati posizione e velocita' nel frame mondo dal tracking dei cluster lidar.
+struct DynObs
+{
+  State pos;        // posizione corrente (centroide del cluster)
+  double vx{0.0};
+  double vy{0.0};
+};
+
+// Traccia interna del tracker lidar (associazione cluster<->traccia nel tempo).
+struct Track
+{
+  int id{0};
+  double x{0.0}, y{0.0};     // ultimo centroide (mondo)
+  double vx{0.0}, vy{0.0};   // velocita' stimata su finestra temporale
+  int hits{0};               // associazioni consecutive
+  int misses{0};             // frame consecutivi senza associazione
+  bool matched{false};       // associata in questo frame
+  int dyn_latch{0};          // >0 => dinamica (latch: ponte sui cali di velocita')
+  bool ever_dynamic{false};  // una volta confermata dinamica, resta tale a vita
+                             // (un pedone non torna MAI a essere un muro statico)
+  // ancora per la stima di velocita' su finestra (riduce il rumore del
+  // centroide dovuto al movimento delle gambe / vista parziale)
+  double ax{0.0}, ay{0.0};
+  ros::Time at;
+  bool has_anchor{false};
 };
 
 // Un'azione = una traiettoria (Sect. 3) con la sua serie di controlli.
@@ -135,6 +166,13 @@ struct ControlledRobot
   double mem_v{0.0};
   double mem_w{0.0};
   bool have_mem{false};
+  bool braked{false};          // freno di sicurezza attivo questo ciclo
+
+  // ---- piano condiviso col controller ad alta frequenza (mutex) ----
+  std::vector<State> follow_path;  // ultima traiettoria scelta da seguire
+  bool follow_stop{false};         // true => fermo (collisione inevitabile/brake)
+  bool have_plan{false};
+  double last_w_pub{0.0};          // ultimo w pubblicato (per lo smoothing)
 };
 
 // Memoria di un equilibrio (per il ragionamento 4.3.4): per ciascun attore
@@ -197,6 +235,12 @@ public:
 
     pnh.param<bool>("loop_goals", loop_goals_, true);
     pnh.param<double>("goal_tolerance", goal_tolerance_, 0.30);
+    // distanza centro-centro di collisione tra agenti dinamici (robot/pedoni)
+    pnh.param<double>("dyn_collision_dist", dyn_collision_dist_, 0.55);
+    // buffer piu' ampio tra due robot controllati (coordinati dal gioco)
+    pnh.param<double>("robot_collision_dist", robot_collision_dist_, 0.75);
+    // smoothing del comando angolare pubblicato (anti-jitter pure-pursuit)
+    pnh.param<double>("w_ema", w_ema_, 0.6);
     pnh.param<double>("goal_region_x", goal_region_x_, 0.30);
     pnh.param<double>("goal_region_y", goal_region_y_, 0.50);
     LoadObstacles(pnh);
@@ -209,11 +253,53 @@ public:
     pnh.param<double>("static_margin", static_margin_, 0.12);
     pnh.param<double>("lidar_inflation", lidar_inflation_, agent_radius_ + static_margin_);
     pnh.param<double>("lidar_actor_filter_radius", lidar_actor_filter_radius_, 0.60);
+    // raggio piu' stretto per filtrare SOLO il corpo degli ALTRI robot
+    // (footprint ~agent_radius). Mai applicato al proprio centro.
+    pnh.param<double>("lidar_robot_filter_radius", lidar_robot_filter_radius_, 0.45);
+
+    // ---- Tracker ostacoli DINAMICI dal lidar (pedoni, NON noti per nome) ----
+    // I punti lidar vengono raggruppati in cluster; i cluster sono tracciati nel
+    // tempo per stimarne la velocita'. I cluster fermi -> griglia statica; quelli
+    // in movimento -> ostacoli dinamici con traiettoria predetta (vel. costante).
+    pnh.param<bool>("track_dynamic", track_dynamic_, true);
+    pnh.param<double>("cluster_cell", cluster_cell_, 0.18);       // lato cella cluster
+    pnh.param<int>("cluster_min_cells", cluster_min_cells_, 1);   // celle min per cluster
+    pnh.param<double>("track_gate", track_gate_, 0.55);           // dist max associazione
+    pnh.param<int>("track_max_misses", track_max_misses_, 6);
+    pnh.param<int>("track_min_hits", track_min_hits_, 3);         // hit prima di usarla
+    pnh.param<double>("dyn_speed_thresh", dyn_speed_thresh_, 0.07); // m/s -> dinamico
+    pnh.param<double>("vel_ema", vel_ema_, 0.6);                  // (non usato: vel su finestra)
+    pnh.param<double>("pos_ema", pos_ema_, 0.5);                  // (non usato)
+    pnh.param<double>("vel_window", vel_window_, 0.5);           // finestra stima velocita' [s]
+    pnh.param<double>("ped_max_speed", ped_max_speed_, 0.6);      // clamp vel. predetta
+    pnh.param<double>("ped_predict_horizon", ped_predict_horizon_, 7.0); // orizzonte predizione [s]
+    pnh.param<int>("dyn_latch_frames", dyn_latch_frames_, 8);    // tieni "dinamico" N frame
     pnh.param<std::string>("scan_topic", scan_topic_, "/scan");
     pnh.param<double>("ego_bubble", ego_bubble_, 0.35);
 
+    // corridoio strada (mantiene i bot in carreggiata)
+    pnh.param<bool>("road_keep", road_keep_, false);
+    pnh.param<double>("road_min_x", road_min_x_, -1.4);
+    pnh.param<double>("road_max_x", road_max_x_, 1.4);
+    pnh.param<double>("road_penalty", road_penalty_, 6.0);
+
+    // costo extra per le azioni di schivata deterministiche (fallback)
+    pnh.param<double>("dodge_penalty", dodge_penalty_, 8.0);
+
     pnh.param<double>("goal_block_penalty", goal_block_penalty_, 100.0);
     pnh.param<double>("hysteresis_weight", hysteresis_weight_, 2.5);
+
+    // ---- Freno di sicurezza (paper: emergency stop) ----
+    // Se eseguire l'azione scelta porta a una collisione imminente entro
+    // brake_lookahead_ secondi (ostacolo statico/lidar o altro agente troppo
+    // vicino), il robot si ferma invece di muoversi.
+    pnh.param<bool>("safety_brake", safety_brake_, true);
+    pnh.param<double>("brake_lookahead", brake_lookahead_, 0.8);
+    pnh.param<double>("brake_margin", brake_margin_, 0.12);
+    // semi-apertura del cono "davanti" per il freno su ostacoli statici [rad].
+    // Frena solo se l'ostacolo statico cade in questo cono attorno alla
+    // direzione di marcia (evita frenate passando di fianco).
+    pnh.param<double>("brake_cone", brake_cone_, 1.05);  // ~60 gradi
 
     pnh.param<double>("interaction_radius", interaction_radius_, 5.0);
     pnh.param<double>("agent_radius", agent_radius_, 0.375);
@@ -246,6 +332,10 @@ public:
     pnh.param<double>("max_actor_speed", max_actor_speed_, 1.2);
     pnh.param<double>("default_actor_speed", default_actor_speed_, 0.55);
 
+    // controller ad alta frequenza (segue la traiettoria pianificata)
+    pnh.param<double>("control_pub_rate", control_pub_rate_, 15.0);
+    pnh.param<double>("lookahead", lookahead_, 0.45);
+
     pnh.param<bool>("enable_debug", enable_debug_, true);
     pnh.param<bool>("publish_markers", publish_markers_, true);
     pnh.param<std::string>("marker_frame", marker_frame_, "odom");
@@ -260,8 +350,20 @@ public:
                                &GameTheoryPlannerNode::ModelStatesCallback, this);
     marker_pub_ = nh_.advertise<visualization_msgs::MarkerArray>("gt_planner/markers", 1);
 
+    // Timer ONESHOT auto-riarmato: il ciclo successivo parte SOLO quando il
+    // precedente e' concluso (vedi TimerCallback). Cosi' i cicli non si
+    // accavallano mai e l'algoritmo si adatta alla velocita' del PC: se un
+    // ciclo e' lento, il prossimo aspetta semplicemente che finisca.
     timer_ = nh_.createTimer(ros::Duration(1.0 / control_rate_),
-                             &GameTheoryPlannerNode::TimerCallback, this);
+                             &GameTheoryPlannerNode::TimerCallback, this,
+                             /*oneshot=*/true);
+
+    // Controller DISACCOPPIATO ad alta frequenza: insegue la traiettoria
+    // pianificata (pure-pursuit) e pubblica cmd_vel a ritmo costante, anche
+    // mentre PlanCycle (lento) ricalcola su un altro thread. Cosi' il robot non
+    // resta MAI col vecchio comando "congelato" durante un ciclo lungo.
+    control_timer_ = nh_.createTimer(ros::Duration(1.0 / control_pub_rate_),
+                                     &GameTheoryPlannerNode::ControlPublish, this);
 
     ROS_INFO("[gt_planner] Avviato. robot controllati=%zu  M_n=%d  Delta_t=%.2f  R=%.3f",
              robots_.size(), robot_num_actions_, replan_dt_, agent_radius_);
@@ -476,9 +578,9 @@ private:
     if (!obstacle_autodetect_)
       return;
 
-    for (size_t i = 0; i < latest_msg_.name.size(); ++i)
+    for (size_t i = 0; i < work_msg_.name.size(); ++i)
     {
-      const std::string &nm = latest_msg_.name[i];
+      const std::string &nm = work_msg_.name[i];
       if (nm == "ground_plane" || nm == "sun" || IsControlledRobotName(nm))
         continue;
       if (std::find(actor_names_.begin(), actor_names_.end(), nm) != actor_names_.end())
@@ -488,8 +590,8 @@ private:
 
       Obstacle o;
       o.is_box = false;
-      o.x = latest_msg_.pose[i].position.x;
-      o.y = latest_msg_.pose[i].position.y;
+      o.x = work_msg_.pose[i].position.x;
+      o.y = work_msg_.pose[i].position.y;
       o.r = obstacle_default_radius_;
       obstacles_.push_back(o);
     }
@@ -543,6 +645,76 @@ private:
     return StateBlockedRaw(x, y);
   }
 
+  // Freno di sicurezza (paper: emergency stop). Ritorna true se eseguire
+  // l'azione scelta `act` porta a una collisione imminente entro
+  // brake_lookahead_ secondi:
+  //   - un punto futuro passa troppo vicino a un altro agente (robot/pedone),
+  //     col centro entro 2*agent_radius + brake_margin (OMNIdirezionale: un
+  //     agente puo' venirci addosso da qualunque lato), oppure
+  //   - un punto futuro si avvicina a un ostacolo STATICO che e' DAVANTI al
+  //     robot (entro un cono attorno alla direzione di marcia) e a distanza
+  //     fisica < agent_radius + brake_margin. Il vincolo direzionale evita di
+  //     frenare quando si passa semplicemente DI FIANCO a un ostacolo.
+  // Per lo statico si usa la distanza FISICA al punto/ostacolo (non la griglia
+  // gonfiata di lidar_inflation, che e' un margine di pianificazione, non di
+  // collisione).
+  // others = posizioni CORRENTI degli altri agenti (snapshot).
+  // Freno di sicurezza SOLO STATICO (lampioni / punti lidar fermi / oggetti).
+  // L'evitamento dei pedoni NON e' qui: lo gestisce il gioco (le azioni che si
+  // scontrano con la traiettoria PREDETTA del pedone hanno costo INF, quindi il
+  // robot sceglie da solo un'azione che lo schiva; se non esiste, il dispatch
+  // pubblica STOP). Cosi' il robot si ferma SOLO quando nessun path evita il
+  // pedone, e non perche' il pedone e' semplicemente "vicino".
+  // Il freno statico e' direzionale: frena solo se l'ostacolo statico e'
+  // DAVANTI (cono attorno all'heading) e a distanza fisica < agent_radius +
+  // brake_margin -> non frena passando di fianco.
+  bool SafetyBrake(const Action &act) const
+  {
+    if (act.v_cmd <= 1e-6 && std::abs(act.w_cmd) <= 1e-6)
+      return false;  // gia' fermo
+    const int look =
+        std::max(1, static_cast<int>(std::round(brake_lookahead_ / integrator_dt_)));
+    const double dmin_static = agent_radius_ + brake_margin_;
+    const double cos_cone = std::cos(brake_cone_);
+    const int n = static_cast<int>(act.trajectory.size());
+    if (n == 0)
+      return false;
+
+    const State &r0 = act.trajectory.front();   // posa corrente del robot
+    const double hx = std::cos(r0.yaw), hy = std::sin(r0.yaw);
+
+    auto ahead = [&](double ox, double oy) {
+      double vx = ox - r0.x, vy = oy - r0.y;
+      double d = std::hypot(vx, vy);
+      if (d < 1e-6)
+        return true;
+      return (vx * hx + vy * hy) / d >= cos_cone;
+    };
+
+    for (int k = 1; k <= look && k < n; ++k)
+    {
+      const State &p = act.trajectory[k];
+
+      // ostacoli statici a oggetto (cilindri/box): distanza alla superficie
+      for (const auto &o : obstacles_)
+      {
+        double dx = std::abs(p.x - o.x), dy = std::abs(p.y - o.y), dsurf;
+        if (o.is_box)
+          dsurf = std::hypot(std::max(0.0, dx - o.hx), std::max(0.0, dy - o.hy));
+        else
+          dsurf = std::max(0.0, std::hypot(p.x - o.x, p.y - o.y) - o.r);
+        if (dsurf < dmin_static && ahead(o.x, o.y))
+          return true;
+      }
+
+      // ostacoli statici da lidar: punto grezzo piu' vicino, solo se davanti
+      for (const auto &lp : lidar_points_)
+        if (std::hypot(p.x - lp.x, p.y - lp.y) < dmin_static && ahead(lp.x, lp.y))
+          return true;
+    }
+    return false;
+  }
+
   // true se una traiettoria entra in un ostacolo (oggetto o punto lidar)
   bool TrajectoryHitsObstacle(const std::vector<State> &t) const
   {
@@ -579,7 +751,21 @@ private:
     double remaining = std::hypot(goal_x_ - end.x, goal_y_ - end.y);
     if (SegmentBlocked(end.x, end.y, goal_x_, goal_y_))
       remaining += goal_block_penalty_;
-    return traveled + remaining;
+
+    // corridoio strada: penalita' SOFT per ogni punto fuori dalla carreggiata
+    // [road_min_x, road_max_x]. Tiene i bot sulla strada (no "marciapiede"),
+    // ma resta finita: in caso di necessita' (schivare un pedone) possono
+    // uscire un attimo e rientrare, invece di andare in deadlock.
+    double off = 0.0;
+    if (road_keep_)
+      for (const auto &p : t)
+      {
+        if (p.x < road_min_x_)
+          off += (road_min_x_ - p.x);
+        else if (p.x > road_max_x_)
+          off += (p.x - road_max_x_);
+      }
+    return traveled + remaining + road_penalty_ * off;
   }
 
   // -------------------- layer lidar --------------------
@@ -604,74 +790,329 @@ private:
     return lidar_cells_.find(CellKey(x, y)) != lidar_cells_.end();
   }
 
-  // Ricostruisce la griglia di occupazione dai punti /scan (trasformati in
-  // frame mondo), gonfiati di lidar_inflation. Scarta i punti vicini agli
-  // attori: quelli restano agenti dinamici gestiti dal gioco, non ostacoli
-  // statici. Salva anche i punti grezzi per la visualizzazione.
-  // Griglia di occupazione statica CONDIVISA, costruita unendo gli /scan di
-  // TUTTI i robot. Ogni punto e' portato in frame mondo tramite la posa mondo
-  // del robot (da model_states) -> niente TF. I punti su agenti dinamici
-  // (robot + attori) vengono scartati: restano gestiti dal gioco.
-  void BuildLidarGrid(const std::vector<State> &dynamic_centers)
+  // Inserisce nella griglia statica un disco di celle gonfiate (lidar_inflation)
+  // attorno al punto (px,py).
+  void InsertInflated(double px, double py)
   {
-    lidar_cells_.clear();
-    lidar_points_.clear();
-    if (!use_lidar_)
-      return;
-
     const int rc = std::max(0, static_cast<int>(std::ceil(lidar_inflation_ / lidar_grid_res_)));
     const double r2 = lidar_inflation_ * lidar_inflation_;
     const long nx = static_cast<long>((ws_max_x_ - ws_min_x_) / lidar_grid_res_) + 1;
+    long cix = static_cast<long>(std::floor((px - ws_min_x_) / lidar_grid_res_));
+    long ciy = static_cast<long>(std::floor((py - ws_min_y_) / lidar_grid_res_));
+    for (int di = -rc; di <= rc; ++di)
+      for (int dj = -rc; dj <= rc; ++dj)
+      {
+        double cx = (cix + di) * lidar_grid_res_ + ws_min_x_;
+        double cy = (ciy + dj) * lidar_grid_res_ + ws_min_y_;
+        if (std::hypot(cx - px, cy - py) <= lidar_inflation_ + 1e-9 ||
+            (di * di + dj * dj) * lidar_grid_res_ * lidar_grid_res_ <= r2)
+          lidar_cells_.insert((ciy + dj) * nx + (cix + di));
+      }
+  }
 
-    for (const auto &rb : robots_)
+  // ============================================================
+  //  Percezione lidar: cluster -> tracking -> classifica statico/dinamico
+  // ============================================================
+  // Il robot NON conosce gli attori per nome. Unisce gli /scan di tutti i robot
+  // (in frame mondo via posa da model_states), scarta SOLO i punti sul corpo
+  // della propria flotta (raggio stretto, posa nota), poi:
+  //   1. raggruppa i punti rimasti in cluster (connected-components su griglia);
+  //   2. associa i cluster alle tracce dei frame precedenti e ne stima velocita';
+  //   3. cluster fermi  -> griglia di occupazione statica (lampioni, muri);
+  //   4. cluster mobili  -> ostacoli dinamici (pedoni) con velocita' stimata,
+  //      che il gioco usera' predicendone la traiettoria (vel. costante).
+  void BuildPerception()
+  {
+    lidar_cells_.clear();
+    lidar_points_.clear();
+    dyn_obs_.clear();
+    if (!use_lidar_)
+      return;
+
+    // ---- 1. raccolta punti mondo (esclude SOLO i corpi della flotta) ----
+    std::vector<std::array<double, 2>> pts;
+    pts.reserve(2048);
+    for (size_t rbi = 0; rbi < robots_.size(); ++rbi)
     {
+      const auto &rb = robots_[rbi];
       if (!rb.have_scan || !rb.have_state)
         continue;
-
       const auto &scan = rb.scan;
       const double rx = rb.state.x, ry = rb.state.y, ryaw = rb.state.yaw;
       const double cyaw = std::cos(ryaw), syaw = std::sin(ryaw);
-
       for (size_t i = 0; i < scan.ranges.size(); ++i)
       {
         const double r = scan.ranges[i];
         if (!std::isfinite(r) || r < scan.range_min || r > scan.range_max)
           continue;
-
         const double a = scan.angle_min + i * scan.angle_increment;
-        const double lx = r * std::cos(a);
-        const double ly = r * std::sin(a);
-        // punto del raggio in frame mondo (base_scan ~ base_link, offset ~6cm
-        // trascurabile vs risoluzione griglia)
+        const double lx = r * std::cos(a), ly = r * std::sin(a);
         const double px = rx + lx * cyaw - ly * syaw;
         const double py = ry + lx * syaw + ly * cyaw;
-
-        // scarta punti su agenti dinamici (altri robot + attori)
-        bool on_dyn = false;
-        for (const auto &dc : dynamic_centers)
-          if (std::hypot(px - dc.x, py - dc.y) < lidar_actor_filter_radius_)
-          {
-            on_dyn = true;
-            break;
-          }
-        if (on_dyn)
-          continue;
-
-        lidar_points_.push_back({px, py, 0.0});
-
-        long cix = static_cast<long>(std::floor((px - ws_min_x_) / lidar_grid_res_));
-        long ciy = static_cast<long>(std::floor((py - ws_min_y_) / lidar_grid_res_));
-        for (int di = -rc; di <= rc; ++di)
-          for (int dj = -rc; dj <= rc; ++dj)
-          {
-            double cx = (cix + di) * lidar_grid_res_ + ws_min_x_;
-            double cy = (ciy + dj) * lidar_grid_res_ + ws_min_y_;
-            if (std::hypot(cx - px, cy - py) <= lidar_inflation_ + 1e-9 ||
-                (di * di + dj * dj) * lidar_grid_res_ * lidar_grid_res_ <= r2)
-              lidar_cells_.insert((ciy + dj) * nx + (cix + di));
-          }
+        // scarta solo i corpi degli ALTRI robot controllati (posa nota); mai il
+        // proprio centro (il lidar non vede se stesso).
+        bool fleet = false;
+        for (size_t rj = 0; rj < robots_.size() && !fleet; ++rj)
+        {
+          if (rj == rbi || !robots_[rj].have_state)
+            continue;
+          if (std::hypot(px - robots_[rj].state.x, py - robots_[rj].state.y) <
+              lidar_robot_filter_radius_)
+            fleet = true;
+        }
+        if (!fleet)
+          pts.push_back({px, py});
       }
     }
+
+    if (!track_dynamic_)
+    {
+      // tracker disattivato: tutto statico (comportamento legacy)
+      for (const auto &p : pts)
+      {
+        lidar_points_.push_back({p[0], p[1], 0.0});
+        InsertInflated(p[0], p[1]);
+      }
+      return;
+    }
+
+    // ---- 2. clustering: connected-components su griglia cluster_cell_ ----
+    const double cc = cluster_cell_;
+    const long STR = 100000;  // stride per codificare (ccx,ccy) in una chiave
+    auto key = [&](double x, double y) {
+      long cx = static_cast<long>(std::floor((x - ws_min_x_) / cc)) + 50000;
+      long cy = static_cast<long>(std::floor((y - ws_min_y_) / cc)) + 50000;
+      return cy * STR + cx;
+    };
+    std::unordered_map<long, std::vector<int>> cells;
+    for (int i = 0; i < static_cast<int>(pts.size()); ++i)
+      cells[key(pts[i][0], pts[i][1])].push_back(i);
+
+    struct Comp { double cx, cy; std::vector<int> idx; };
+    std::vector<Comp> comps;
+    std::unordered_set<long> visited;
+    for (const auto &kv : cells)
+    {
+      if (visited.count(kv.first))
+        continue;
+      // BFS sulle 8 celle vicine occupate
+      std::vector<long> stack{kv.first};
+      visited.insert(kv.first);
+      std::vector<int> members;
+      while (!stack.empty())
+      {
+        long k = stack.back();
+        stack.pop_back();
+        auto it = cells.find(k);
+        if (it != cells.end())
+          members.insert(members.end(), it->second.begin(), it->second.end());
+        long kcx = k % STR, kcy = k / STR;
+        for (int di = -1; di <= 1; ++di)
+          for (int dj = -1; dj <= 1; ++dj)
+          {
+            if (!di && !dj)
+              continue;
+            long nk = (kcy + dj) * STR + (kcx + di);
+            if (cells.count(nk) && !visited.count(nk))
+            {
+              visited.insert(nk);
+              stack.push_back(nk);
+            }
+          }
+      }
+      if (static_cast<int>(members.size()) < cluster_min_cells_)
+        continue;
+      double sx = 0, sy = 0;
+      for (int m : members)
+      {
+        sx += pts[m][0];
+        sy += pts[m][1];
+      }
+      Comp c;
+      c.cx = sx / members.size();
+      c.cy = sy / members.size();
+      c.idx = std::move(members);
+      comps.push_back(std::move(c));
+    }
+
+    // ---- 3. tracking: associa cluster<->tracce, stima velocita' ----
+    ros::Time now = ros::Time::now();
+    double dt = 0.0;
+    if (have_perc_time_)
+      dt = (now - last_perc_time_).toSec();
+    last_perc_time_ = now;
+    have_perc_time_ = true;
+    if (dt <= 1e-3 || dt > 1.0)
+      dt = 0.0;  // dt non affidabile -> niente aggiornamento velocita'
+
+    for (auto &t : tracks_)
+      t.matched = false;
+    std::vector<bool> comp_used(comps.size(), false);
+
+    // greedy: per ogni componente la traccia non ancora associata piu' vicina
+    for (size_t ci = 0; ci < comps.size(); ++ci)
+    {
+      int best = -1;
+      double bestd = track_gate_;
+      for (size_t ti = 0; ti < tracks_.size(); ++ti)
+      {
+        if (tracks_[ti].matched)
+          continue;
+        double d = std::hypot(comps[ci].cx - tracks_[ti].x, comps[ci].cy - tracks_[ti].y);
+        if (d < bestd)
+        {
+          bestd = d;
+          best = static_cast<int>(ti);
+        }
+      }
+      if (best >= 0)
+      {
+        Track &t = tracks_[best];
+        // velocita' stimata su FINESTRA temporale (~vel_window_ s): si confronta
+        // il centroide attuale con un'ancora vecchia di almeno vel_window_, non
+        // col frame precedente. Lo spostamento delle gambe (~qualche cm) diventa
+        // trascurabile rispetto allo spostamento reale su 0.5 s -> velocita'
+        // stabile e direzione corretta (no oscillazioni del path predetto).
+        if (!t.has_anchor)
+        {
+          t.ax = comps[ci].cx;
+          t.ay = comps[ci].cy;
+          t.at = now;
+          t.has_anchor = true;
+        }
+        else
+        {
+          double dtw = (now - t.at).toSec();
+          if (dtw >= vel_window_)
+          {
+            double mvx = (comps[ci].cx - t.ax) / dtw;
+            double mvy = (comps[ci].cy - t.ay) / dtw;
+            // scarta i glitch di associazione (salti di centroide -> velocita'
+            // impossibili per un pedone); altrimenti EMA leggera per smussare.
+            if (std::hypot(mvx, mvy) <= 1.5 * ped_max_speed_)
+            {
+              t.vx = 0.5 * t.vx + 0.5 * mvx;
+              t.vy = 0.5 * t.vy + 0.5 * mvy;
+            }
+            t.ax = comps[ci].cx;
+            t.ay = comps[ci].cy;
+            t.at = now;
+          }
+        }
+        t.x = comps[ci].cx;   // posizione = centroide corrente (assoluto, mondo)
+        t.y = comps[ci].cy;
+        t.hits++;
+        t.misses = 0;
+        t.matched = true;
+        comp_used[ci] = true;
+        // latch dinamico: se confermata e in movimento, (ri)arma il latch.
+        // Un oggetto davvero fermo non arma mai il latch -> resta statico.
+        if (t.hits >= track_min_hits_ &&
+            std::hypot(t.vx, t.vy) >= dyn_speed_thresh_)
+        {
+          t.dyn_latch = dyn_latch_frames_;
+          t.ever_dynamic = true;  // confermata mobile -> pedone per sempre
+        }
+        else if (t.dyn_latch > 0)
+          --t.dyn_latch;
+      }
+    }
+    // componenti non associate -> nuove tracce
+    for (size_t ci = 0; ci < comps.size(); ++ci)
+    {
+      if (comp_used[ci])
+        continue;
+      Track t;
+      t.id = next_track_id_++;
+      t.x = comps[ci].cx;
+      t.y = comps[ci].cy;
+      t.hits = 1;
+      t.matched = true;
+      tracks_.push_back(t);
+    }
+    // tracce non associate -> miss; rimosse dopo troppi miss
+    for (auto &t : tracks_)
+      if (!t.matched)
+        t.misses++;
+    tracks_.erase(std::remove_if(tracks_.begin(), tracks_.end(),
+                                 [&](const Track &t) { return t.misses > track_max_misses_; }),
+                  tracks_.end());
+
+    // ---- 4. classifica e costruisci griglia statica + lista dinamici ----
+    // mappa: per ogni componente associata, quale traccia (per riusare la
+    // classificazione). Rifaccio l'associazione spaziale veloce.
+    for (size_t ci = 0; ci < comps.size(); ++ci)
+    {
+      // traccia piu' vicina (gia' aggiornata sopra)
+      int near = -1;
+      double bd = track_gate_;
+      for (size_t ti = 0; ti < tracks_.size(); ++ti)
+      {
+        double d = std::hypot(comps[ci].cx - tracks_[ti].x, comps[ci].cy - tracks_[ti].y);
+        if (d < bd)
+        {
+          bd = d;
+          near = static_cast<int>(ti);
+        }
+      }
+      bool dynamic = false;
+      double vx = 0, vy = 0;
+      if (near >= 0 && tracks_[near].ever_dynamic)
+      {
+        dynamic = true;
+        vx = tracks_[near].vx;
+        vy = tracks_[near].vy;
+      }
+      if (dynamic)
+      {
+        DynObs d;
+        d.pos.x = comps[ci].cx;
+        d.pos.y = comps[ci].cy;
+        d.pos.yaw = std::atan2(vy, vx);
+        d.vx = vx;
+        d.vy = vy;
+        dyn_obs_.push_back(d);
+      }
+      else
+      {
+        // statico (o non ancora confermato): in griglia, cosi' viene evitato
+        for (int m : comps[ci].idx)
+        {
+          lidar_points_.push_back({pts[m][0], pts[m][1], 0.0});
+          InsertInflated(pts[m][0], pts[m][1]);
+        }
+      }
+    }
+  }
+
+  // Traiettoria predetta di un pedone: moto rettilineo uniforme con la velocita'
+  // stimata, ricampionata a integrator_dt per num_traj_steps passi (stessa base
+  // temporale delle azioni robot, cosi' TrajectoriesCollide confronta per indice).
+  std::vector<Action> PredictDynObs(const DynObs &d) const
+  {
+    double sp = std::hypot(d.vx, d.vy);
+    sp = std::min(sp, ped_max_speed_);
+    double yaw = (sp > 1e-3) ? std::atan2(d.vy, d.vx) : d.pos.yaw;
+
+    Action a;
+    a.name = "pred";
+    a.v_cmd = sp;
+    a.w_cmd = 0.0;
+    State s = d.pos;
+    s.yaw = yaw;
+    a.trajectory.push_back(s);
+    // orizzonte di predizione PIU' LUNGO delle azioni robot: cosi' lo scontro
+    // frontale viene rilevato da lontano e il bot puo' deviare in anticipo,
+    // non all'ultimo momento (poi freno d'emergenza).
+    const int steps = std::max(1, static_cast<int>(
+                                     std::round(ped_predict_horizon_ / integrator_dt_)));
+    for (int k = 0; k < steps; ++k)
+    {
+      s = StepUnicycle(s, sp, 0.0, integrator_dt_);
+      a.trajectory.push_back(s);
+    }
+    a.cost = PathLength(a.trajectory);
+    return {a};
   }
 
   // true se (px,py) e' dentro un ostacolo gonfiato del raggio agente
@@ -904,6 +1345,7 @@ private:
       add_arc(robot_v_, -c * W, "arc_sR");
     }
 
+
     // azione memorizzata (Sect. 4.3.3 "il gioco ricorda la combinazione
     // vincente"): si rioffre la TRAIETTORIA epsilon* scelta al tick precedente
     // (path full-to-goal gia' valido), NON un replay del comando (v,w) che
@@ -1027,14 +1469,34 @@ private:
   // ============================================================
   //  Vincoli: collisione (Eq. 2/4) e corridoio di gruppo
   // ============================================================
-  bool TrajectoriesCollide(const std::vector<State> &a, const std::vector<State> &b) const
+  bool TrajectoriesCollide(const std::vector<State> &a, const std::vector<State> &b,
+                           double dmin) const
   {
     const size_t n = std::min(a.size(), b.size());
-    const double dmin = 2.0 * agent_radius_ + collision_margin_;
     for (size_t i = 0; i < n; ++i)
       if (std::hypot(a[i].x - b[i].x, a[i].y - b[i].y) < dmin)
         return true;
     return false;
+  }
+
+  // distanza minima centro-centro tra due traiettorie e l'ISTANTE (s) in cui
+  // avviene, confrontando per indice di tempo (a[i] vs b[i]). Serve a capire
+  // QUANDO il robot incrocerebbe il pedone (diagnostica).
+  void ClosestApproach(const std::vector<State> &a, const std::vector<State> &b,
+                       double &dmin, double &tmin) const
+  {
+    dmin = 1e9;
+    tmin = -1.0;
+    const size_t n = std::min(a.size(), b.size());
+    for (size_t i = 0; i < n; ++i)
+    {
+      double d = std::hypot(a[i].x - b[i].x, a[i].y - b[i].y);
+      if (d < dmin)
+      {
+        dmin = d;
+        tmin = i * integrator_dt_;
+      }
+    }
   }
 
   // distanza punto-segmento (per il corridoio del gruppo)
@@ -1087,7 +1549,7 @@ private:
 
   bool FindActorState(const std::string &name, State &out) const
   {
-    return ExtractState(latest_msg_, name, out);
+    return ExtractState(work_msg_, name, out);
   }
 
   // ============================================================
@@ -1126,15 +1588,23 @@ private:
     {
       std::vector<bool> collided(agents.size(), false);
 
-      // J_tilde: collisione tra coppie di agenti (Eq. 2/4)
+      // J_tilde: collisione tra coppie di agenti (Eq. 2/4). Buffer piu' ampio tra
+      // due robot controllati (entrambi coordinati dal gioco): cosi' tengono piu'
+      // distanza e sopravvivono alla deriva di esecuzione del pure-pursuit, invece
+      // di sfiorarsi a 0.5 e finire a contatto.
       for (size_t i = 0; i < agents.size(); ++i)
         for (size_t j = i + 1; j < agents.size(); ++j)
+        {
+          double dmin = (agents[i].is_robot && agents[j].is_robot)
+                            ? robot_collision_dist_
+                            : dyn_collision_dist_;
           if (TrajectoriesCollide(agents[i].actions[alloc[r][i]].trajectory,
-                                  agents[j].actions[alloc[r][j]].trajectory))
+                                  agents[j].actions[alloc[r][j]].trajectory, dmin))
           {
             collided[i] = true;
             collided[j] = true;
           }
+        }
 
       for (size_t i = 0; i < agents.size(); ++i)
       {
@@ -1408,8 +1878,128 @@ private:
 
   void ModelStatesCallback(const gazebo_msgs::ModelStates::ConstPtr &msg)
   {
+    std::lock_guard<std::mutex> lk(state_mutex_);
     latest_msg_ = *msg;
     have_model_states_ = true;
+  }
+
+  // ============================================================
+  //  Controller ad alta frequenza (pure-pursuit della traiettoria)
+  // ============================================================
+  // Gira su un thread separato (AsyncSpinner) a control_pub_rate Hz. Per ogni
+  // robot prende la posa CORRENTE (model_states) e insegue la traiettoria
+  // pianificata piu' recente: nessun "congelamento" mentre PlanCycle ricalcola.
+  void ControlPublish(const ros::TimerEvent &)
+  {
+    gazebo_msgs::ModelStates msg;
+    bool have;
+    {
+      std::lock_guard<std::mutex> lk(state_mutex_);
+      have = have_model_states_;
+      if (have)
+        msg = latest_msg_;
+    }
+    if (!have)
+      return;
+
+    std::string clog;
+    for (auto &r : robots_)
+    {
+      // snapshot del piano (sotto lock: PlanCycle scrive da un altro thread)
+      std::vector<State> path;
+      bool stop, has_plan, final_reached;
+      {
+        std::lock_guard<std::mutex> lk(plan_mutex_);
+        path = r.follow_path;
+        stop = r.follow_stop;
+        has_plan = r.have_plan;
+        final_reached = r.final_reached;
+      }
+
+      geometry_msgs::Twist cmd;  // default 0
+      State cur;
+      const bool have_pose = ExtractState(msg, r.name, cur);
+      // fermo totale entro goal_tolerance: niente strascico lento prima che il
+      // planner assegni il goal successivo (evita il "creep" verso il goal).
+      const bool at_goal =
+          have_pose && std::hypot(r.goal_x - cur.x, r.goal_y - cur.y) < goal_tolerance_;
+      const bool moving =
+          have_pose && !final_reached && !stop && !at_goal && has_plan && path.size() > 1;
+      if (moving)
+        cmd = PurePursuit(cur, path, r.goal_x, r.goal_y);
+      // smoothing del comando angolare: i path RRT sono frastagliati e il pure-
+      // pursuit dava w a scatti (+0.23/-0.15 ogni ciclo) -> il bot sbandava e
+      // usciva dal path pianificato finendo in collisione. EMA -> sterzata fluida.
+      double w_smooth = moving ? (w_ema_ * r.last_w_pub + (1.0 - w_ema_) * cmd.angular.z) : 0.0;
+      cmd.angular.z = w_smooth;
+      r.last_w_pub = w_smooth;
+      r.cmd_pub.publish(cmd);
+
+      if (enable_debug_)
+      {
+        char cb[96];
+        std::snprintf(cb, sizeof(cb), "[%s pub=%.2f/%.2f%s%s%s] ", r.name.c_str(),
+                      cmd.linear.x, cmd.angular.z, stop ? " STOP" : "",
+                      at_goal ? " ATGOAL" : "", final_reached ? " FIN" : "");
+        clog += cb;
+      }
+    }
+    if (enable_debug_)
+      ROS_INFO_THROTTLE(0.5, "[gt_planner][ctrl] %s", clog.c_str());
+  }
+
+  // pure-pursuit unicycle: trova un punto sulla traiettoria a ~lookahead davanti
+  // e sterza verso di esso; v costante (ridotta in curva stretta / vicino al
+  // goal). Robusto al fatto che il robot avanza tra una pianificazione e l'altra.
+  geometry_msgs::Twist PurePursuit(const State &cur, const std::vector<State> &path,
+                                   double gx, double gy) const
+  {
+    geometry_msgs::Twist cmd;
+    // indice del punto piu' vicino alla posa corrente
+    size_t nearest = 0;
+    double bd = 1e18;
+    for (size_t i = 0; i < path.size(); ++i)
+    {
+      double d = std::hypot(path[i].x - cur.x, path[i].y - cur.y);
+      if (d < bd) { bd = d; nearest = i; }
+    }
+    // avanza fino al primo punto a distanza >= lookahead
+    size_t li = nearest;
+    for (size_t i = nearest; i < path.size(); ++i)
+    {
+      if (std::hypot(path[i].x - cur.x, path[i].y - cur.y) >= lookahead_)
+      {
+        li = i;
+        break;
+      }
+      li = i;
+    }
+    const double lx = path[li].x, ly = path[li].y;
+
+    double alpha = std::atan2(ly - cur.y, lx - cur.x) - cur.yaw;
+    alpha = std::atan2(std::sin(alpha), std::cos(alpha));  // wrap
+
+    double v = robot_v_;
+    // rallenta avvicinandosi al goal vero
+    const double dgoal = std::hypot(gx - cur.x, gy - cur.y);
+    if (dgoal < lookahead_)
+      v *= std::max(0.2, dgoal / lookahead_);
+    // rallentamento in curva DOLCE: prima era v*=0.3 per |alpha|>1.2, che faceva
+    // strisciare il bot a ~0.07 m/s in ogni schivata/inversione -> non faceva in
+    // tempo a togliersi e dopo il goal restava "incontrollato" nell'inversione a
+    // U. Ora scala con l'angolo ma con pavimento 0.55: continua ad avanzare
+    // mentre gira.
+    {
+      double turn_scale = 1.0 - 0.5 * (std::abs(alpha) / M_PI);  // alpha=pi -> 0.5
+      v *= std::max(0.55, turn_scale);
+    }
+
+    double w = 2.0 * v * std::sin(alpha) / std::max(1e-3, lookahead_);
+    w = std::max(-w_max_, std::min(w_max_, w));
+
+    cmd.linear.x = v;
+    cmd.angular.z = w;
+    return cmd;
   }
 
   // ============================================================
@@ -1567,11 +2157,14 @@ private:
     marker_pub_.publish(arr);
   }
 
+  // Richiede lo stop di tutti i robot: imposta follow_stop, e' il controller ad
+  // alta frequenza (unico publisher di cmd_vel) a mandare 0. Cosi' non ci sono
+  // due thread che scrivono su cmd_vel.
   void PublishStop()
   {
-    geometry_msgs::Twist c;
+    std::lock_guard<std::mutex> lk(plan_mutex_);
     for (auto &r : robots_)
-      r.cmd_pub.publish(c);
+      r.follow_stop = true;
   }
 
   // selezione congiunta dell'equilibrio (paper §4.3.3, tutti controllabili):
@@ -1613,22 +2206,36 @@ private:
   // ============================================================
   //  Loop principale (ogni Delta t)
   // ============================================================
+  // Wrapper del timer ONESHOT: esegue un ciclo completo e SOLO al termine
+  // ri-arma il timer per il ciclo successivo. Garantisce che le callback non
+  // si accavallino mai (single-thread) e che ogni ciclo venga portato a
+  // termine; la cadenza si adatta da sola alla velocita' del PC.
   void TimerCallback(const ros::TimerEvent &)
   {
-    if (!have_model_states_)
-      return;
+    PlanCycle();
+    timer_.stop();
+    timer_.setPeriod(ros::Duration(1.0 / control_rate_), /*reset=*/true);
+    timer_.start();
+  }
 
-    // stati di tutti i robot controllati + centri dinamici (per filtrare lidar)
-    std::vector<State> dyn_centers;
+  void PlanCycle()
+  {
+    // snapshot dei model_states (la callback scrive da un altro thread): tutto
+    // il resto del ciclo lavora su work_msg_, senza tenere il lock a lungo.
+    {
+      std::lock_guard<std::mutex> lk(state_mutex_);
+      if (!have_model_states_)
+        return;
+      work_msg_ = latest_msg_;
+    }
+
+    // stati di tutti i robot controllati
     size_t n_with_state = 0;
     for (auto &r : robots_)
     {
-      r.have_state = ExtractState(latest_msg_, r.name, r.state);
+      r.have_state = ExtractState(work_msg_, r.name, r.state);
       if (r.have_state)
-      {
-        dyn_centers.push_back(r.state);
         ++n_with_state;
-      }
     }
     if (n_with_state == 0)
     {
@@ -1637,20 +2244,31 @@ private:
       return;
     }
 
-    std::vector<State> actor_states;
-    for (const std::string &an : actor_names_)
-    {
-      State as;
-      if (ExtractState(latest_msg_, an, as))
-      {
-        actor_states.push_back(as);
-        dyn_centers.push_back(as);
-      }
-    }
-
-    // mappa statica condivisa: lidar unito (filtrando robot+attori) + oggetti
-    BuildLidarGrid(dyn_centers);
+    // Percezione: cluster lidar -> tracking -> griglia statica + ostacoli
+    // dinamici (pedoni) con velocita' stimata. Nessuna conoscenza per nome.
+    BuildPerception();
     RefreshObstacles();
+
+    // posizioni correnti dei pedoni rilevati (per escape-clearance e freno)
+    std::vector<State> dyn_centers;
+    for (const auto &d : dyn_obs_)
+      dyn_centers.push_back(d.pos);
+
+    if (enable_debug_)
+    {
+      std::string pl;
+      char pb[96];
+      for (size_t i = 0; i < dyn_obs_.size(); ++i)
+      {
+        std::snprintf(pb, sizeof(pb), "[ped%zu @(%.2f,%.2f) v=(%.2f,%.2f) |v|=%.2f] ",
+                      i, dyn_obs_[i].pos.x, dyn_obs_[i].pos.y,
+                      dyn_obs_[i].vx, dyn_obs_[i].vy,
+                      std::hypot(dyn_obs_[i].vx, dyn_obs_[i].vy));
+        pl += pb;
+      }
+      ROS_INFO_THROTTLE(0.5, "[gt_planner] pedoni rilevati=%zu tracce=%zu %s",
+                        dyn_obs_.size(), tracks_.size(), pl.c_str());
+    }
 
     // ---- 1. per ogni robot: avanza goal + genera action set (context swap) ----
     std::vector<AgentActions> agents;
@@ -1678,13 +2296,13 @@ private:
       escape_mode_ = StateBlockedRaw(r.state.x, r.state.y);
       r.escape = escape_mode_;
 
-      // altri agenti (altri robot + attori) per la clearance in escape
+      // altri agenti (altri robot + pedoni rilevati) per la clearance in escape
       other_agents_.clear();
       for (size_t rj = 0; rj < robots_.size(); ++rj)
         if (rj != ri && robots_[rj].have_state)
           other_agents_.push_back(robots_[rj].state);
-      for (const auto &as : actor_states)
-        other_agents_.push_back(as);
+      for (const auto &dc : dyn_centers)
+        other_agents_.push_back(dc);
       prev_robot_traj_ = r.prev_traj;
       have_prev_robot_traj_ = r.have_prev;
       memorized_v_ = r.mem_v;
@@ -1709,7 +2327,22 @@ private:
       PublishStop();
       return;
     }
+    // i primi n_controlled agenti sono i robot; i pedoni vengono dopo
     const size_t n_controlled = agents.size();
+
+    // pedoni rilevati: agenti NON controllati con UNA sola azione (traiettoria
+    // predetta a vel. costante). Una sola azione -> non gonfia lo spazio
+    // congiunto, ma entra in TrajectoriesCollide e rende INF le azioni robot che
+    // gli vanno addosso.
+    for (size_t di = 0; di < dyn_obs_.size(); ++di)
+    {
+      AgentActions pa;
+      pa.name = "ped_" + std::to_string(di);
+      pa.state = dyn_obs_[di].pos;
+      pa.is_robot = false;
+      pa.actions = PredictDynObs(dyn_obs_[di]);
+      agents.push_back(pa);
+    }
 
     // ---- 2-4. gioco congiunto: costi, Nash, Pareto ----
     auto alloc = EnumerateAllocations(agents);
@@ -1739,25 +2372,46 @@ private:
         auto &r = robots_[agent_robot_idx[ai]];
         const Action &act = agents[ai].actions[alloc[selected_row][ai]];
 
-        geometry_msgs::Twist cmd;
+        // L'azione scelta si scontra (con un pedone o l'altro robot) se il suo
+        // costo nel gioco e' INF: significa che NESSUN path evitava la
+        // collisione -> ci si ferma e si lascia passare. Se invece il costo e'
+        // finito, l'azione e' gia' una che schiva (o non rischia) -> si procede.
+        const bool collides = costs[selected_row][ai] >= 0.5 * kInf;
+
+        bool stop_flag = false;
         if (!r.final_reached)
         {
-          cmd.linear.x = act.v_cmd;
-          cmd.angular.z = act.w_cmd;
+          if (collides)
+            stop_flag = true;  // nessun path evita la collisione -> STOP
+          else if (safety_brake_ && SafetyBrake(act))
+            stop_flag = true;  // rete di sicurezza statica (lampione/lidar davanti)
         }
-        r.cmd_pub.publish(cmd);
+        r.braked = stop_flag;
 
-        r.mem_v = act.v_cmd;
-        r.mem_w = act.w_cmd;
+        // NON si pubblica qui: il piano viene consegnato al controller ad alta
+        // frequenza (ControlPublish), che insegue la traiettoria in continuo.
+        {
+          std::lock_guard<std::mutex> lk(plan_mutex_);
+          r.follow_path = act.trajectory;
+          r.follow_stop = stop_flag || r.final_reached;
+          r.have_plan = true;
+        }
+
+        // memorized re-offer: salta se fermo (mem=0), cosi' non ripropone
+        // un'azione che ci avrebbe fatto collidere.
+        r.mem_v = stop_flag ? 0.0 : act.v_cmd;
+        r.mem_w = stop_flag ? 0.0 : act.w_cmd;
         r.have_mem = true;
-        r.prev_traj = act.trajectory;
+        r.prev_traj = act.trajectory;  // traiettoria pianificata (isteresi/omotopia)
         r.have_prev = true;
       }
     }
     else
     {
       ROS_WARN_THROTTLE(0.5, "[gt_planner] nessun equilibrio Nash/Pareto. Stop.");
-      PublishStop();
+      std::lock_guard<std::mutex> lk(plan_mutex_);
+      for (auto &r : robots_)
+        r.follow_stop = true;   // il controller terra' fermi i robot
     }
 
     // ---- RViz + log ----
@@ -1775,9 +2429,43 @@ private:
       {
         const auto &r = robots_[agent_robot_idx[ai]];
         const Action &act = valid ? agents[ai].actions[alloc[selected_row][ai]] : agents[ai].actions.back();
-        std::snprintf(buf, sizeof(buf), "[%s n=%zu sel=%s cmd=%.2f/%.2f%s] ",
-                      r.name.c_str(), agents[ai].actions.size(), act.name.c_str(),
-                      act.v_cmd, act.w_cmd, r.escape ? " ESC" : "");
+        // costo della scelta (INF = collisione con un pedone/robot inevitabile)
+        double sc = valid ? costs[selected_row][ai] : -1.0;
+        char costbuf[24];
+        if (sc < 0) std::snprintf(costbuf, sizeof(costbuf), "n/a");
+        else if (sc >= 0.5 * kInf) std::snprintf(costbuf, sizeof(costbuf), "INF");
+        else std::snprintf(costbuf, sizeof(costbuf), "%.1f", sc);
+        // closest approach al pedone piu' "pericoloso" (min dist nel tempo)
+        double best_ca = 1e9, best_t = -1.0;
+        for (size_t pj = n_controlled; pj < agents.size(); ++pj)
+        {
+          double d, t;
+          ClosestApproach(act.trajectory, agents[pj].actions[0].trajectory, d, t);
+          if (d < best_ca) { best_ca = d; best_t = t; }
+        }
+        char cabuf[40];
+        if (best_t >= 0)
+          std::snprintf(cabuf, sizeof(cabuf), " ca=%.2f@%.1fs", best_ca, best_t);
+        else
+          std::snprintf(cabuf, sizeof(cabuf), " ca=-");
+        // closest approach all'ALTRO robot (per capire se l'INF e' robot-robot)
+        double rr_ca = 1e9, rr_t = -1.0;
+        for (size_t aj = 0; aj < n_controlled; ++aj)
+        {
+          if (aj == ai) continue;
+          double d, t;
+          ClosestApproach(act.trajectory, agents[aj].actions[alloc[selected_row][aj]].trajectory, d, t);
+          if (d < rr_ca) { rr_ca = d; rr_t = t; }
+        }
+        char rrbuf[40];
+        if (rr_t >= 0)
+          std::snprintf(rrbuf, sizeof(rrbuf), " rr=%.2f@%.1fs", rr_ca, rr_t);
+        else
+          std::snprintf(rrbuf, sizeof(rrbuf), "");
+        std::snprintf(buf, sizeof(buf), "[%s sel=%s cmd=%.2f/%.2f cost=%s%s%s%s%s] ",
+                      r.name.c_str(), act.name.c_str(),
+                      act.v_cmd, act.w_cmd, costbuf, cabuf, rrbuf,
+                      r.escape ? " ESC" : "", r.braked ? " BRAKE" : "");
         line += buf;
       }
       ROS_INFO_THROTTLE(0.5, "%s", line.c_str());
@@ -1791,6 +2479,12 @@ private:
   ros::Publisher cmd_pub_;
   ros::Publisher marker_pub_;
   ros::Timer timer_;
+  ros::Timer control_timer_;
+  double control_pub_rate_{15.0};
+  double lookahead_{0.45};
+  std::mutex state_mutex_;   // protegge latest_msg_/have_model_states_
+  std::mutex plan_mutex_;    // protegge follow_path/follow_stop/have_plan
+  gazebo_msgs::ModelStates work_msg_;  // snapshot usato dentro PlanCycle
 
   gazebo_msgs::ModelStates latest_msg_;
   bool have_model_states_{false};
@@ -1820,6 +2514,27 @@ private:
   double lidar_grid_res_{0.10};
   double lidar_inflation_{0.50};
   double lidar_actor_filter_radius_{0.60};
+  double lidar_robot_filter_radius_{0.45};
+
+  // tracker dinamico
+  bool track_dynamic_{true};
+  double cluster_cell_{0.18};
+  int cluster_min_cells_{1};
+  double track_gate_{0.55};
+  int track_max_misses_{6};
+  int track_min_hits_{3};
+  double dyn_speed_thresh_{0.07};
+  double vel_ema_{0.6};
+  double pos_ema_{0.5};
+  double vel_window_{0.5};
+  double ped_max_speed_{0.6};
+  double ped_predict_horizon_{7.0};
+  int dyn_latch_frames_{8};
+  std::vector<Track> tracks_;
+  int next_track_id_{0};
+  ros::Time last_perc_time_;
+  bool have_perc_time_{false};
+  std::vector<DynObs> dyn_obs_;       // pedoni rilevati questo ciclo
   double static_margin_{0.12};
   double ego_bubble_{0.35};
   double ego_x_{0.0};
@@ -1832,6 +2547,11 @@ private:
   std::vector<State> lidar_points_;
   tf::TransformListener tf_listener_;
   double goal_block_penalty_{100.0};
+  double dodge_penalty_{8.0};
+  bool road_keep_{false};
+  double road_min_x_{-1.4};
+  double road_max_x_{1.4};
+  double road_penalty_{6.0};
   double hysteresis_weight_{2.5};
   std::vector<State> prev_robot_traj_;
   bool have_prev_robot_traj_{false};
@@ -1842,6 +2562,9 @@ private:
   bool final_goal_reached_{false};
   double goal_x_{2.0}, goal_y_{0.0};
   double goal_tolerance_{0.30};
+  double dyn_collision_dist_{0.55};
+  double robot_collision_dist_{0.75};
+  double w_ema_{0.6};
   double goal_region_x_{0.30}, goal_region_y_{0.50};
 
   double interaction_radius_{5.0};
@@ -1867,6 +2590,11 @@ private:
   double actor_turn_rate_{0.25};
   double min_actor_speed_{0.05}, max_actor_speed_{1.2}, default_actor_speed_{0.55};
 
+  bool safety_brake_{true};
+  double brake_lookahead_{0.8};
+  double brake_margin_{0.12};
+  double brake_cone_{1.05};
+
   bool enable_debug_{true};
   bool publish_markers_{true};
   std::string marker_frame_{"odom"};
@@ -1888,6 +2616,10 @@ int main(int argc, char **argv)
 {
   ros::init(argc, argv, "gt_planner_node");
   GameTheoryPlannerNode node;
-  ros::spin();
+  // 2+ thread: la pianificazione (lenta) e il controller ad alta frequenza +
+  // le callback dei sensori girano in parallelo -> il robot non si "congela".
+  ros::AsyncSpinner spinner(3);
+  spinner.start();
+  ros::waitForShutdown();
   return 0;
 }

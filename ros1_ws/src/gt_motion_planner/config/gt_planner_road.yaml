@@ -1,0 +1,123 @@
+# ============================================================================
+# Config STRADA: 2 turtlebot in versi opposti + pedoni rilevati dal lidar.
+# Il robot NON conosce gli attori per nome: li rileva, traccia e predice
+# tramite il tracker dinamico lidar (cluster -> tracking -> classifica).
+# ============================================================================
+
+robots:
+  - name: "tb1"
+    cmd_topic: "/tb1/cmd_vel"
+    scan_topic: "/tb1/scan"
+    loop_goals: true
+    goals:
+      - [-0.4, 5.0]
+      - [-0.4, -5.0]
+  - name: "tb2"
+    cmd_topic: "/tb2/cmd_vel"
+    scan_topic: "/tb2/scan"
+    loop_goals: true
+    goals:
+      - [0.4, -5.0]
+      - [0.4, 5.0]
+
+# Nessun attore noto per nome: tutto rilevato dal lidar.
+actor_names: []
+group_pairs: []
+
+goal_tolerance: 0.30
+goal_region_x: 0.30
+goal_region_y: 0.50
+
+# ---- Interazione / collisioni ----
+interaction_radius: 6.0
+agent_radius: 0.375
+collision_margin: 0.20
+# distanza centro-centro di collisione tra agenti dinamici (robot/pedoni).
+# Ingombro fisico reale (~waffle 0.22 + pedone 0.25 + margine). Piu' piccolo di
+# 2*agent_radius: cosi' su strada stretta il bot passa di fianco senza fermarsi.
+dyn_collision_dist: 0.50
+robot_collision_dist: 0.75   # buffer piu' ampio robot-robot (coordinati dal gioco)
+w_ema: 0.6                   # smoothing sterzata pubblicata (anti-jitter)
+
+# ---- Tempistiche ----
+# Timer ONESHOT auto-riarmato: ogni ciclo viene SEMPRE portato a termine e il
+# successivo parte solo dopo. control_rate qui = 1/intervallo tra la FINE di un
+# ciclo e l'inizio del prossimo (anche finestra per aggiornare scan/model_states).
+# La cadenza reale si auto-limita al tempo di calcolo: se il PC e' lento, i cicli
+# diventano semplicemente piu' radi, MAI accavallati o troncati.
+replan_dt: 0.10
+integrator_dt: 0.08          # passo piu' grosso = meno punti per traiettoria
+planning_horizon: 4.0
+control_rate: 5.0
+
+# Controller DISACCOPPIATO: insegue la traiettoria pianificata a ritmo costante
+# (su un thread separato) -> niente "congelamento" mentre la pianificazione e'
+# lenta. control_pub_rate = Hz di pubblicazione cmd_vel; lookahead = pure-pursuit.
+control_pub_rate: 15.0
+lookahead: 0.45
+
+# ---- RRT control-based ----
+robot_v: 0.22
+w_min: 0.10
+w_max: 0.55
+curvature_factor: 0.5
+prop_min_lo: 0.35
+prop_min_hi: 0.65
+prop_max_lo: 0.75
+prop_max_hi: 1.25
+robot_num_actions: 6         # N solve RRT full-to-goal per robot/ciclo: meno = piu' veloce
+rrt_solve_time: 0.035
+
+# strada stretta lungo Y: workspace lungo e sottile
+ws_min_x: -2.5
+ws_max_x: 2.5
+ws_min_y: -7.0
+ws_max_y: 7.0
+
+# ---- Ostacoli statici: nessuna conoscenza preventiva (solo lidar) ----
+static_obstacles: []
+obstacle_autodetect: false
+obstacle_default_radius: 0.40
+
+# ---- Layer lidar ----
+use_lidar: true
+lidar_grid_res: 0.10
+lidar_inflation: 0.50
+lidar_actor_filter_radius: 0.60
+lidar_robot_filter_radius: 0.45   # filtra SOLO corpo altri robot (posa nota)
+static_margin: 0.12
+ego_bubble: 0.35
+
+# ---- Tracker ostacoli dinamici (pedoni) dal lidar ----
+track_dynamic: true
+cluster_cell: 0.35          # largo: unisce le 2 gambe in 1 cluster (centroide stabile)
+cluster_min_cells: 1
+track_gate: 0.65            # abbastanza largo da far maturare la traccia (vel.) ma < distanza tra pedoni (~0.9)
+track_max_misses: 12        # tracce persistono piu' a lungo (meno churn di ID)
+track_min_hits: 2           # conferma dinamico piu' in fretta
+dyn_speed_thresh: 0.05
+vel_window: 0.5             # stima velocita' su 0.5 s -> stabile (no jitter gambe)
+ped_max_speed: 0.6
+ped_predict_horizon: 7.0    # predici 7 s avanti -> scontro frontale visto da lontano
+dyn_latch_frames: 12        # tieni "dinamico" ~1.2 s anche su cali di velocita'
+
+# ---- Corridoio strada (mantiene i bot in carreggiata) ----
+road_keep: true
+road_min_x: -1.4
+road_max_x: 1.4
+road_penalty: 6.0
+
+goal_block_penalty: 100.0
+dodge_penalty: 8.0           # archi di schivata = fallback (scelti solo se il dritto collide)
+hysteresis_weight: 2.5
+
+# ---- Freno di sicurezza (emergency stop) ----
+safety_brake: true
+brake_lookahead: 0.8
+brake_margin: 0.12
+brake_cone: 1.05   # ~60 gradi: frena su statico solo se e' davanti
+
+# ---- Debug / visualizzazione ----
+enable_debug: true
+publish_markers: true
+marker_frame: "world"

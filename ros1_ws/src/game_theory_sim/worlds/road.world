@@ -1,0 +1,116 @@
+<?xml version="1.0" ?>
+<sdf version="1.6">
+  <world name="default">
+    <gui fullscreen='0'>
+      <camera name='user_camera'>
+        <!-- vista dall'alto sulla strada (asse Y) -->
+        <pose>0 0 16 0 1.5708 1.5708</pose>
+        <view_controller>orbit</view_controller>
+        <projection_type>orthographic</projection_type>
+      </camera>
+    </gui>
+
+    <include><uri>model://sun</uri></include>
+    <include><uri>model://ground_plane</uri></include>
+
+    <!-- striscia di asfalto (solo visiva, niente collisione), larga 3.6 m -->
+    <model name="road_strip">
+      <static>true</static>
+      <pose>0 0 0.005 0 0 0</pose>
+      <link name="link">
+        <visual name="v">
+          <geometry><box><size>3.6 12.0 0.01</size></box></geometry>
+          <material>
+            <ambient>0.25 0.25 0.27 1</ambient>
+            <diffuse>0.25 0.25 0.27 1</diffuse>
+          </material>
+        </visual>
+      </link>
+    </model>
+
+    <!-- ============================================================ -->
+    <!--  Pedoni: traiettoria scriptata DRITTA lungo Y, ~0.2 m/s,     -->
+    <!--  loop. z=0 (piedi a terra -> gambe all'altezza del lidar),   -->
+    <!--  roll=0 (in piedi). ActorCollisionsPlugin -> colliders gambe -->
+    <!--  ingranditi, visibili dal lidar.                             -->
+    <!-- ============================================================ -->
+
+    <!-- ped_up_1: sale (+Y) corsia sinistra -->
+    <actor name="ped_up_1">
+      <pose>-0.9 -4.5 0 0 0 1.5708</pose>
+      <skin><filename>walk.dae</filename><scale>1.0</scale></skin>
+      <animation name="walking">
+        <filename>walk.dae</filename><scale>1.0</scale><interpolate_x>true</interpolate_x>
+      </animation>
+      <plugin name="ped_up_1_col" filename="libActorCollisionsPlugin.so">
+        <scaling collision="LeftUpLeg_LeftLeg_collision"   scale="8.0 8.0 1.0"/>
+        <scaling collision="LeftLeg_LeftFoot_collision"    scale="8.0 8.0 1.0"/>
+        <scaling collision="RightUpLeg_RightLeg_collision" scale="8.0 8.0 1.0"/>
+        <scaling collision="RightLeg_RightFoot_collision"  scale="8.0 8.0 1.0"/>
+        <scaling collision="LowerBack_Spine_collision"     scale="12.0 20.0 5.0" pose="0.05 0 0 0 -0.2 0"/>
+      </plugin>
+      <script>
+        <loop>true</loop><auto_start>true</auto_start><delay_start>0.0</delay_start>
+        <trajectory id="0" type="walking">
+          <waypoint><time>0.0</time>  <pose>-0.9 -4.5 0 0 0 1.5708</pose></waypoint>
+          <waypoint><time>45.0</time> <pose>-0.9  4.5 0 0 0 1.5708</pose></waypoint>
+          <waypoint><time>46.0</time> <pose>-0.9  4.5 0 0 0 -1.5708</pose></waypoint>
+          <waypoint><time>91.0</time> <pose>-0.9 -4.5 0 0 0 -1.5708</pose></waypoint>
+        </trajectory>
+      </script>
+    </actor>
+
+    <!-- ped_down_1: scende (-Y) corsia destra -->
+    <actor name="ped_down_1">
+      <pose>0.9 4.5 0 0 0 -1.5708</pose>
+      <skin><filename>walk.dae</filename><scale>1.0</scale></skin>
+      <animation name="walking">
+        <filename>walk.dae</filename><scale>1.0</scale><interpolate_x>true</interpolate_x>
+      </animation>
+      <plugin name="ped_down_1_col" filename="libActorCollisionsPlugin.so">
+        <scaling collision="LeftUpLeg_LeftLeg_collision"   scale="8.0 8.0 1.0"/>
+        <scaling collision="LeftLeg_LeftFoot_collision"    scale="8.0 8.0 1.0"/>
+        <scaling collision="RightUpLeg_RightLeg_collision" scale="8.0 8.0 1.0"/>
+        <scaling collision="RightLeg_RightFoot_collision"  scale="8.0 8.0 1.0"/>
+        <scaling collision="LowerBack_Spine_collision"     scale="12.0 20.0 5.0" pose="0.05 0 0 0 -0.2 0"/>
+      </plugin>
+      <script>
+        <loop>true</loop><auto_start>true</auto_start><delay_start>0.0</delay_start>
+        <trajectory id="0" type="walking">
+          <waypoint><time>0.0</time>  <pose>0.9  4.5 0 0 0 -1.5708</pose></waypoint>
+          <waypoint><time>45.0</time> <pose>0.9 -4.5 0 0 0 -1.5708</pose></waypoint>
+          <waypoint><time>46.0</time> <pose>0.9 -4.5 0 0 0 1.5708</pose></waypoint>
+          <waypoint><time>91.0</time> <pose>0.9  4.5 0 0 0 1.5708</pose></waypoint>
+        </trajectory>
+      </script>
+    </actor>
+
+    <!-- ped_up_2: sale (+Y) corsia centrale, parte a meta' strada -->
+    <actor name="ped_up_2">
+      <pose>0.0 0.0 0 0 0 1.5708</pose>
+      <skin><filename>walk.dae</filename><scale>1.0</scale></skin>
+      <animation name="walking">
+        <filename>walk.dae</filename><scale>1.0</scale><interpolate_x>true</interpolate_x>
+      </animation>
+      <plugin name="ped_up_2_col" filename="libActorCollisionsPlugin.so">
+        <scaling collision="LeftUpLeg_LeftLeg_collision"   scale="8.0 8.0 1.0"/>
+        <scaling collision="LeftLeg_LeftFoot_collision"    scale="8.0 8.0 1.0"/>
+        <scaling collision="RightUpLeg_RightLeg_collision" scale="8.0 8.0 1.0"/>
+        <scaling collision="RightLeg_RightFoot_collision"  scale="8.0 8.0 1.0"/>
+        <scaling collision="LowerBack_Spine_collision"     scale="12.0 20.0 5.0" pose="0.05 0 0 0 -0.2 0"/>
+      </plugin>
+      <script>
+        <loop>true</loop><auto_start>true</auto_start><delay_start>0.0</delay_start>
+        <trajectory id="0" type="walking">
+          <waypoint><time>0.0</time>  <pose>0.0  0.0 0 0 0 1.5708</pose></waypoint>
+          <waypoint><time>22.5</time> <pose>0.0  4.5 0 0 0 1.5708</pose></waypoint>
+          <waypoint><time>23.5</time> <pose>0.0  4.5 0 0 0 -1.5708</pose></waypoint>
+          <waypoint><time>68.5</time> <pose>0.0 -4.5 0 0 0 -1.5708</pose></waypoint>
+          <waypoint><time>69.5</time> <pose>0.0 -4.5 0 0 0 1.5708</pose></waypoint>
+          <waypoint><time>92.0</time> <pose>0.0  0.0 0 0 0 1.5708</pose></waypoint>
+        </trajectory>
+      </script>
+    </actor>
+
+  </world>
+</sdf>

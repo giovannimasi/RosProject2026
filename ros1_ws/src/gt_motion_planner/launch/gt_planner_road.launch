@@ -1,0 +1,16 @@
+<launch>
+  <arg name="rviz" default="true"/>
+
+  <node pkg="gt_motion_planner"
+        type="gt_planner_node"
+        name="gt_planner_node"
+        output="screen">
+    <rosparam file="$(find gt_motion_planner)/config/gt_planner_road.yaml" command="load"/>
+  </node>
+
+  <node if="$(arg rviz)"
+        pkg="rviz"
+        type="rviz"
+        name="gt_rviz"
+        args="-d $(find gt_motion_planner)/config/gt_planner_multi.rviz"/>
+</launch>

@@ -66,13 +66,22 @@ obstacle_default_radius: 0.40
 # ---- Layer lidar (per-robot, unito in mappa condivisa) ----
 use_lidar: true
 lidar_grid_res: 0.10
-lidar_inflation: 0.50
-lidar_actor_filter_radius: 0.60   # filtra punti su robot/attori (dinamici)
+lidar_inflation: 0.55              # standoff statico (alzato: rileva prima i bordi)
+lidar_actor_filter_radius: 0.60   # filtra punti su ATTORI dinamici
+lidar_robot_filter_radius: 0.45   # filtra SOLO corpo altri robot (mai il proprio)
 static_margin: 0.12
 ego_bubble: 0.35
 
 goal_block_penalty: 100.0
 hysteresis_weight: 2.5
+
+# ---- Freno di sicurezza (emergency stop, paper) ----
+# Se l'azione scelta porta a collisione imminente entro brake_lookahead s
+# (ostacolo statico/lidar o altro agente entro 2*agent_radius+brake_margin),
+# il robot si ferma invece di muoversi.
+safety_brake: true
+brake_lookahead: 0.8
+brake_margin: 0.12
 
 # ---- Debug / visualizzazione ----
 enable_debug: true
