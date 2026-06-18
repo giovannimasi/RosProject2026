@@ -110,6 +110,15 @@ actor lookup.
 | A pedestrian not detected (no prediction) → got hit | `track_gate` too tight → association broke before the velocity window matured → never `ever_dynamic` | Loosen `track_gate` (still below pedestrian spacing) |
 | Collisions despite a "finite" (safe) planned cost — with both robots and pedestrians | Jagged RRT paths made pure-pursuit jitter the steering ±0.2 rad/s/tick → the robot drifted off its plan, turning planned `rr=0.64` into actual `rr=0.26` | **Steering smoothing** (`w_ema`) + **larger robot–robot buffer** (`robot_collision_dist`) to survive residual drift |
 
+**Round N — passing comfort & goal re-acquisition** (after steering smoothing fixed
+the gross collisions):
+
+| Problem | Diagnosis | Fix |
+|--------|-----------|-----|
+| Bot stops to wait even when it cleanly passes a pedestrian *beside* it (no contact) | `dyn_collision_dist=0.5` flagged a 0.45–0.5 m side-pass as a collision → `INF` → stop | Split into a **hard contact distance** (`dyn_collision_dist=0.45`, `INF`/stop only on real contact) + a **soft comfort penalty** (`ped_comfort_dist`/`ped_comfort_weight`): prefer passing wide, but keep walking close instead of stopping when no wider path exists |
+| After reaching a goal the bot crawls slowly past it for several seconds before turning to the next goal | `AdvanceGoal` reset hysteresis but **not the memorized action**, so the memorized (old-goal) path + hysteresis kept the bot committed to the old direction; the U-turn lost on cost until the gap grew | Reset **both** memorized and hysteresis on goal switch → immediately commits to a fresh path toward the new goal |
+| Two robots froze permanently face-to-face (run ended with both stopped) | `robot_collision_dist=0.75` raised earlier exceeded the lane spacing; once within 0.75 head-on, forward-only motion can't reopen the gap → every joint action `INF` → symmetric deadlock | Lower `robot_collision_dist` to 0.55 (≤ lane spacing) **and** add a **gridlock escape**: after `dyn_stuck_limit` cycles of `INF`, the robot enters escape (max-clearance) to turn away and separate; the stuck counter decays during escape so it persists long enough |
+
 **Diagnostics added along the way** (so failures are readable from the log): per-ped
 `@(x,y) v=(vx,vy) |v|`; per-robot `cost`, `ca=dist@time` (closest approach to the
 nearest pedestrian) and `rr=dist@time` (to the other robot); and the controller's

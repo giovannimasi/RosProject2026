@@ -12,6 +12,7 @@ C++). The reference paper converted to markdown is in [`paper.md`](paper.md).
 | File | Content |
 |------|---------|
 | [ARCHITECTURE.md](ARCHITECTURE.md) | How the **current** code works: features, structure, the algorithm pipeline, every tunable, and what comes from the paper vs. what was built from scratch. Kept in sync with the code. |
+| [ROS_DESIGN.md](ROS_DESIGN.md) | The **engineering** side: ROS concepts used and where (nodes, topics, messages, namespaces, spinners, params; why no services/actions), technical choices and why (ROS 1, C++, OMPL, OOP, Docker), repo/workspace structure, build system, Docker image. |
 | [EVOLUTION.md](EVOLUTION.md) | The project history: single-agent → multi-agent → road scenario, with the problems hit, the diagnoses, and the fixes/features added at each step. |
 
 ## Scenarios at a glance

@@ -35,8 +35,11 @@ collision_margin: 0.20
 # distanza centro-centro di collisione tra agenti dinamici (robot/pedoni).
 # Ingombro fisico reale (~waffle 0.22 + pedone 0.25 + margine). Piu' piccolo di
 # 2*agent_radius: cosi' su strada stretta il bot passa di fianco senza fermarsi.
-dyn_collision_dist: 0.50
-robot_collision_dist: 0.75   # buffer piu' ampio robot-robot (coordinati dal gioco)
+dyn_collision_dist: 0.45     # contatto fisico robot-pedone (INF/stop solo qui)
+ped_comfort_dist: 0.75       # sotto questa distanza: penalita' soft (passa largo, non si ferma)
+ped_comfort_weight: 4.0
+robot_collision_dist: 0.55   # buffer robot-robot (non > spaziatura corsie, senno' gridlock)
+dyn_stuck_limit: 6           # cicli in collisione prima di escape anti-gridlock
 w_ema: 0.6                   # smoothing sterzata pubblicata (anti-jitter)
 
 # ---- Tempistiche ----

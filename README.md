@@ -5,8 +5,28 @@ Gazebo, in Docker. Two TurtleBot3 Waffle Pi robots negotiate a shared space with
 each other and with lidar-detected pedestrians, using Nash/Pareto equilibria.
 
 **Design & history:** see [`docs/`](docs/) —
-[Architecture](docs/ARCHITECTURE.md) (how the code works) and
-[Evolution](docs/EVOLUTION.md) (how we got here). Reference paper: [`docs/paper.md`](docs/paper.md).
+[Architecture](docs/ARCHITECTURE.md) (planning algorithm),
+[ROS & System Design](docs/ROS_DESIGN.md) (ROS concepts, tech choices, repo structure),
+and [Evolution](docs/EVOLUTION.md) (how we got here).
+Reference paper: [`docs/paper.md`](docs/paper.md).
+
+## Features
+
+- **Game-theoretic decision making** — robots negotiate through Nash/Pareto equilibria
+  over candidate trajectories, instead of planning each robot in isolation.
+- **Centralized multi-robot coordination** — one node plays all robots in a single joint
+  game, here with crossing goals.
+- **Pedestrian perception from lidar** — moving people are detected, tracked and their
+  motion predicted with no prior knowledge of them; static obstacles are mapped too.
+- **Full-to-goal kinodynamic planning** — OMPL control-based RRT on a unicycle model.
+- **Decoupled real-time control** — a self-pacing planner plus a smooth high-rate path
+  follower, so motion never freezes during a slow planning cycle.
+- **Safety & robustness** — static emergency brake, escape from traps/deadlocks,
+  anti–zig-zag hysteresis, and soft lane keeping on the road.
+- **Three scenarios** — single agent, multi-robot, and the road (two robots among
+  walking pedestrians).
+- **RViz visualization + diagnostics** — all evaluated trajectories, equilibria, the
+  chosen path and the lidar shown live; per-cycle costs and closest-approach logged.
 
 ---
 

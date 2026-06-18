@@ -173,6 +173,7 @@ struct ControlledRobot
   bool follow_stop{false};         // true => fermo (collisione inevitabile/brake)
   bool have_plan{false};
   double last_w_pub{0.0};          // ultimo w pubblicato (per lo smoothing)
+  int stuck_count{0};              // cicli consecutivi con azione scelta = INF
 };
 
 // Memoria di un equilibrio (per il ragionamento 4.3.4): per ciascun attore
@@ -235,10 +236,21 @@ public:
 
     pnh.param<bool>("loop_goals", loop_goals_, true);
     pnh.param<double>("goal_tolerance", goal_tolerance_, 0.30);
-    // distanza centro-centro di collisione tra agenti dinamici (robot/pedoni)
-    pnh.param<double>("dyn_collision_dist", dyn_collision_dist_, 0.55);
-    // buffer piu' ampio tra due robot controllati (coordinati dal gioco)
-    pnh.param<double>("robot_collision_dist", robot_collision_dist_, 0.75);
+    // distanza centro-centro di collisione DURA (INF/stop) robot-pedone: solo
+    // contatto fisico reale. Passare di fianco piu' largo di questa NON ferma.
+    pnh.param<double>("dyn_collision_dist", dyn_collision_dist_, 0.45);
+    // distanza di "comfort" robot-pedone: penalita' SOFT (non INF) per passaggi
+    // piu' stretti -> il bot preferisce passare largo, ma se non puo' continua a
+    // camminare invece di fermarsi.
+    pnh.param<double>("ped_comfort_dist", ped_comfort_dist_, 0.75);
+    pnh.param<double>("ped_comfort_weight", ped_comfort_weight_, 4.0);
+    // buffer tra due robot controllati. NON troppo grande: su strada stretta, se
+    // > spaziatura delle corsie, due robot testa-a-testa non riescono piu' ad
+    // aprire il gap (moto solo in avanti) e vanno in gridlock permanente.
+    pnh.param<double>("robot_collision_dist", robot_collision_dist_, 0.55);
+    // cicli consecutivi in collisione (INF) prima di dichiarare gridlock ed entrare
+    // in escape per separarsi
+    pnh.param<int>("dyn_stuck_limit", dyn_stuck_limit_, 6);
     // smoothing del comando angolare pubblicato (anti-jitter pure-pursuit)
     pnh.param<double>("w_ema", w_ema_, 0.6);
     pnh.param<double>("goal_region_x", goal_region_x_, 0.30);
@@ -1146,7 +1158,12 @@ private:
     }
     r.goal_x = r.goals[r.goal_idx].x;
     r.goal_y = r.goals[r.goal_idx].y;
-    r.have_prev = false;  // nuovo goal: ridecide il lato senza isteresi
+    // nuovo goal: azzera la continuita' col path VECCHIO, altrimenti l'azione
+    // memorizzata (verso il goal appena raggiunto) + l'isteresi tengono il bot
+    // agganciato alla vecchia direzione e striscia oltre il goal invece di
+    // ripartire subito verso il nuovo (inversione a U).
+    r.have_prev = false;  // niente isteresi sul vecchio lato
+    r.have_mem = false;   // non rioffrire la traiettoria del vecchio goal
     ROS_INFO("[gt_planner] [%s] nuovo goal %zu/%zu: %.2f %.2f",
              r.name.c_str(), r.goal_idx + 1, r.goals.size(), r.goal_x, r.goal_y);
   }
@@ -1614,6 +1631,26 @@ private:
           costs[r][i] = kInf;            // J_tilde = INF
         else
           costs[r][i] = act.cost;        // J = Jhat = Length
+      }
+
+      // Penalita' SOFT di comfort: un robot che sfiora un pedone (closest
+      // approach < ped_comfort_dist, ma senza contatto) paga un extra crescente
+      // -> preferisce passare piu' largo, ma NON e' INF, quindi se non puo' passa
+      // comunque (cammina) invece di fermarsi.
+      for (size_t i = 0; i < agents.size(); ++i)
+      {
+        if (!agents[i].is_robot || costs[r][i] >= 0.5 * kInf)
+          continue;
+        for (size_t j = 0; j < agents.size(); ++j)
+        {
+          if (agents[j].is_robot)
+            continue;  // solo robot-pedone (i robot hanno gia' il loro buffer)
+          double d, t;
+          ClosestApproach(agents[i].actions[alloc[r][i]].trajectory,
+                          agents[j].actions[alloc[r][j]].trajectory, d, t);
+          if (d < ped_comfort_dist_)
+            costs[r][i] += ped_comfort_weight_ * (ped_comfort_dist_ - d);
+        }
       }
     }
     return costs;
@@ -2293,7 +2330,12 @@ private:
       goal_y_ = r.goal_y;
       ego_x_ = r.state.x;
       ego_y_ = r.state.y;
-      escape_mode_ = StateBlockedRaw(r.state.x, r.state.y);
+      // escape: o il robot e' dentro una zona bloccata (statico), OPPURE e'
+      // bloccato in gridlock dinamico (azione scelta = INF per troppi cicli di
+      // fila, es. due robot testa-a-testa). In gridlock l'obiettivo diventa
+      // separarsi (max clearance), rompendo lo stallo simmetrico.
+      escape_mode_ = StateBlockedRaw(r.state.x, r.state.y) ||
+                     (r.stuck_count > dyn_stuck_limit_);
       r.escape = escape_mode_;
 
       // altri agenti (altri robot + pedoni rilevati) per la clearance in escape
@@ -2387,6 +2429,17 @@ private:
             stop_flag = true;  // rete di sicurezza statica (lampione/lidar davanti)
         }
         r.braked = stop_flag;
+
+        // conteggio gridlock: l'azione scelta in collisione (INF) incrementa lo
+        // stuck; quando supera la soglia il robot entra in escape (vedi sopra) per
+        // separarsi. Durante l'escape lo stuck decade piano cosi' la separazione
+        // dura abbastanza; libero in condizioni normali -> reset.
+        if (collides)
+          ++r.stuck_count;
+        else if (!r.escape)
+          r.stuck_count = 0;
+        else if (r.stuck_count > 0)
+          --r.stuck_count;
 
         // NON si pubblica qui: il piano viene consegnato al controller ad alta
         // frequenza (ControlPublish), che insegue la traiettoria in continuo.
@@ -2562,8 +2615,11 @@ private:
   bool final_goal_reached_{false};
   double goal_x_{2.0}, goal_y_{0.0};
   double goal_tolerance_{0.30};
-  double dyn_collision_dist_{0.55};
-  double robot_collision_dist_{0.75};
+  double dyn_collision_dist_{0.45};
+  double ped_comfort_dist_{0.75};
+  double ped_comfort_weight_{4.0};
+  double robot_collision_dist_{0.55};
+  int dyn_stuck_limit_{6};
   double w_ema_{0.6};
   double goal_region_x_{0.30}, goal_region_y_{0.50};
 
