@@ -1,6 +1,6 @@
 set(_CATKIN_CURRENT_PACKAGE "gt_motion_planner")
 set(gt_motion_planner_VERSION "0.0.0")
-set(gt_motion_planner_MAINTAINER "root <root@todo.todo>")
+set(gt_motion_planner_MAINTAINER "Giovanni Masi <giovannimasi@byteverse.it>, Pierfilippo Orsini <pierfilippo.orsini@gmail.com>, Federico Melizza <todo@todo.it>, Riccardo Landi <rlandiitfi@gmail.com>, Alessandro Salomone <alessandrosalomone30@gmail.com>")
 set(gt_motion_planner_PACKAGE_FORMAT "2")
 set(gt_motion_planner_BUILD_DEPENDS "gazebo_msgs" "geometry_msgs" "sensor_msgs" "visualization_msgs" "roscpp" "tf" "ompl")
 set(gt_motion_planner_BUILD_EXPORT_DEPENDS "gazebo_msgs" "geometry_msgs" "sensor_msgs" "visualization_msgs" "roscpp" "tf" "ompl")

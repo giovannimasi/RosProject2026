@@ -111,7 +111,6 @@ road_max_x: 1.4
 road_penalty: 6.0
 
 goal_block_penalty: 100.0
-dodge_penalty: 8.0           # archi di schivata = fallback (scelti solo se il dritto collide)
 hysteresis_weight: 2.5
 
 # ---- Freno di sicurezza (emergency stop) ----

@@ -163,9 +163,6 @@ struct ControlledRobot
   bool escape{false};
   std::vector<State> prev_traj;
   bool have_prev{false};
-  double mem_v{0.0};
-  double mem_w{0.0};
-  bool have_mem{false};
   bool braked{false};          // freno di sicurezza attivo questo ciclo
 
   // ---- piano condiviso col controller ad alta frequenza (mutex) ----
@@ -294,9 +291,6 @@ public:
     pnh.param<double>("road_min_x", road_min_x_, -1.4);
     pnh.param<double>("road_max_x", road_max_x_, 1.4);
     pnh.param<double>("road_penalty", road_penalty_, 6.0);
-
-    // costo extra per le azioni di schivata deterministiche (fallback)
-    pnh.param<double>("dodge_penalty", dodge_penalty_, 8.0);
 
     pnh.param<double>("goal_block_penalty", goal_block_penalty_, 100.0);
     pnh.param<double>("hysteresis_weight", hysteresis_weight_, 2.5);
@@ -1158,12 +1152,10 @@ private:
     }
     r.goal_x = r.goals[r.goal_idx].x;
     r.goal_y = r.goals[r.goal_idx].y;
-    // nuovo goal: azzera la continuita' col path VECCHIO, altrimenti l'azione
-    // memorizzata (verso il goal appena raggiunto) + l'isteresi tengono il bot
-    // agganciato alla vecchia direzione e striscia oltre il goal invece di
-    // ripartire subito verso il nuovo (inversione a U).
-    r.have_prev = false;  // niente isteresi sul vecchio lato
-    r.have_mem = false;   // non rioffrire la traiettoria del vecchio goal
+    // nuovo goal: azzera il riferimento di isteresi del vecchio lato, cosi' il
+    // robot ridecide liberamente la direzione verso il nuovo goal (es. inversione
+    // a U) senza restare agganciato a quella precedente.
+    r.have_prev = false;
     ROS_INFO("[gt_planner] [%s] nuovo goal %zu/%zu: %.2f %.2f",
              r.name.c_str(), r.goal_idx + 1, r.goals.size(), r.goal_x, r.goal_y);
   }
@@ -1363,21 +1355,13 @@ private:
     }
 
 
-    // azione memorizzata (Sect. 4.3.3 "il gioco ricorda la combinazione
-    // vincente"): si rioffre la TRAIETTORIA epsilon* scelta al tick precedente
-    // (path full-to-goal gia' valido), NON un replay del comando (v,w) che
-    // produrrebbe spirali o, se il precedente era stop, un path fermo a costo
-    // minimo -> congelamento. Saltata se il precedente non si muoveva.
-    if (have_memorized_robot_ && std::abs(memorized_v_) > 1e-3 && prev_robot_traj_.size() > 1)
-    {
-      Action a;
-      a.name = "memorized";
-      a.v_cmd = memorized_v_;
-      a.w_cmd = memorized_w_;
-      a.trajectory = prev_robot_traj_;
-      a.cost = TrajectoryCost(a.trajectory);
-      actions.push_back(a);
-    }
+    // NB: l'azione "memorizzata" (paper §4.3.3, ri-offrire la traiettoria scelta al
+    // tick precedente) e' stata RIMOSSA. Essendo identica al riferimento di isteresi
+    // (prev_robot_traj_), aveva penalita' di isteresi nulla e batteva sempre i path
+    // RRT freschi: restava selezionata congelata sul vecchio punto di partenza anche
+    // mentre il robot si muoveva (path verde fermo, movimento senza senso vicino al
+    // goal). La continuita' e' garantita dalla sola isteresi, che ora confronta i
+    // path RRT NUOVI (dalla posa attuale) con quello scelto al ciclo prima.
 
     // azione "stand-still" tau^0 (Sect. 4.3.3): costo maggiore di ogni
     // traiettoria ma molto minore del costo di collisione.
@@ -2347,9 +2331,6 @@ private:
         other_agents_.push_back(dc);
       prev_robot_traj_ = r.prev_traj;
       have_prev_robot_traj_ = r.have_prev;
-      memorized_v_ = r.mem_v;
-      memorized_w_ = r.mem_w;
-      have_memorized_robot_ = r.have_mem;
 
       AgentActions ra;
       ra.name = r.name;
@@ -2450,12 +2431,7 @@ private:
           r.have_plan = true;
         }
 
-        // memorized re-offer: salta se fermo (mem=0), cosi' non ripropone
-        // un'azione che ci avrebbe fatto collidere.
-        r.mem_v = stop_flag ? 0.0 : act.v_cmd;
-        r.mem_w = stop_flag ? 0.0 : act.w_cmd;
-        r.have_mem = true;
-        r.prev_traj = act.trajectory;  // traiettoria pianificata (isteresi/omotopia)
+        r.prev_traj = act.trajectory;  // riferimento per l'isteresi del ciclo dopo
         r.have_prev = true;
       }
     }
@@ -2514,7 +2490,7 @@ private:
         if (rr_t >= 0)
           std::snprintf(rrbuf, sizeof(rrbuf), " rr=%.2f@%.1fs", rr_ca, rr_t);
         else
-          std::snprintf(rrbuf, sizeof(rrbuf), "");
+          rrbuf[0] = '\0';
         std::snprintf(buf, sizeof(buf), "[%s sel=%s cmd=%.2f/%.2f cost=%s%s%s%s%s] ",
                       r.name.c_str(), act.name.c_str(),
                       act.v_cmd, act.w_cmd, costbuf, cabuf, rrbuf,
@@ -2600,7 +2576,6 @@ private:
   std::vector<State> lidar_points_;
   tf::TransformListener tf_listener_;
   double goal_block_penalty_{100.0};
-  double dodge_penalty_{8.0};
   bool road_keep_{false};
   double road_min_x_{-1.4};
   double road_max_x_{1.4};
@@ -2662,10 +2637,6 @@ private:
 
   std::vector<EqRecord> prev_eqs_;            // E[t - Delta t]
   std::map<std::string, State> obs_prev_state_;  // per T^obs
-
-  bool have_memorized_{false};
-  bool have_memorized_robot_{false};
-  double memorized_v_{0.0}, memorized_w_{0.0};
 };
 
 int main(int argc, char **argv)

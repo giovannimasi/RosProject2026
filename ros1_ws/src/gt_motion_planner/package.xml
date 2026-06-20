@@ -5,12 +5,12 @@
   <description>The gt_motion_planner package</description>
 
   <maintainer email="giovannimasi@byteverse.it">Giovanni Masi</maintainer>
-  <maintainer email="">Pierfilippo Orsini</maintainer>
-  <maintainer email="">Federico Melizza</maintainer>
-  <maintainer email="">Riccardo Landi</maintainer>
-  <maintainer email="">Alessandro Salomone</maintainer>
+  <maintainer email="pierfilippo.orsini@gmail.com">Pierfilippo Orsini</maintainer>
+  <maintainer email="todo@todo.it">Federico Melizza</maintainer>
+  <maintainer email="rlandiitfi@gmail.com">Riccardo Landi</maintainer>
+  <maintainer email="alessandrosalomone30@gmail.com">Alessandro Salomone</maintainer>
 
-  <license>TODO</license>
+  <license>BSD 3-Clause</license>
 
   <author email="giovannimasi@byteverse.it">Giovanni Masi</author>
 

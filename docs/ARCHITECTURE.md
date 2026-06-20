@@ -55,8 +55,8 @@ the two threads never write the command at the same time.
 1. **Perception** (§4): the merged lidar is turned into a static occupancy grid plus 
    a list of moving pedestrians with their estimated velocities.
 2. **Per-robot action sets** (§5): for each robot the planner loads that robot's context
-   (goal, escape state, memorized action, hysteresis reference) and uses it for building 
-   its candidate trajectories.
+   (goal, escape state, hysteresis reference) and uses it to build its candidate
+   trajectories.
 3. **Pedestrian agents**: each detected pedestrian is added as a non-controlled agent
    whose only action is its single predicted trajectory.
 4. **Joint game** (§6): the planner enumerates the combinations of all agents' actions,
@@ -64,8 +64,8 @@ the two threads never write the command at the same time.
    selects one combination.
 5. **Dispatch**: for each robot, if the selected action's cost is `INF` (every path
    collides) or the static safety brake fires, the robot is told to stop; otherwise its
-   chosen path is stored for the controller. The chosen `(v, w)` and trajectory are
-   memorized for the next cycle.
+   chosen path is stored for the controller and kept as the hysteresis reference for the
+   next cycle.
 
 ---
 
@@ -107,22 +107,25 @@ moment without enlarging the search.
 ## 5. Robot action set (`GenerateRobotActions`)
 
 Each cycle the planner builds a small set of candidate trajectories for every robot,
-drawn from up to four sources.
+drawn from up to three sources.
 
 - **Full paths to the goal.** A handful of complete trajectories from the robot's
   current pose to the goal, produced by the sampling-based kinodynamic planner. Each
   keeps the cruise speed fixed and explores a different turn rate, so the set spans
   several ways of reaching the goal (more to the left, straighter, more to the right).
-- **The previous choice.** The trajectory the robot committed to on the last cycle is
-  re-offered, so its plan stays consistent from one cycle to the next. It is dropped
-  when the goal changes (otherwise the robot stays attached to the path toward the goal
-  it just reached and drifts past it) and skipped when the previous command was a stop
-  (so it never replays a freeze).
 - **Stand-still.** The option of staying put, priced just above any moving option, so
   the robot prefers to move but can choose to wait.
 - **Fallback arcs.** A few simple fixed arcs, added only when the kinodynamic planner
   found no path at all, so the robot always has something to do in a hard spot without
   these short arcs competing with the full paths in normal conditions.
+
+There is deliberately **no "memorized" / previous-trajectory action**. Re-offering the
+last cycle's path was identical to the hysteresis reference, so it always scored zero
+hysteresis penalty and beat every fresh path, locking the selection onto a stale
+trajectory frozen at an old start point even as the robot moved. Plan continuity now
+comes only from hysteresis (§8), which compares the *fresh* candidates against the
+previous choice, and from the controller, which keeps following the last path between
+replans.
 
 Every candidate is also marked if it passes through a known static obstacle. When the
 robot is trapped, the scoring switches so it prefers whichever candidate moves it
@@ -214,7 +217,8 @@ and whenever the planner has flagged the robot to stop.
   pick a jointly sensible outcome.
 - Both settings the paper describes, combined here: the fully-controllable joint game
   among the robots (§4.3.3), and the among-humans setting (§4.3.4) where the other agents
-  are predicted and the winning combination is remembered between cycles.
+  are predicted. (The paper's equilibrium-memory idea was tried but removed — see §5 —
+  because it locked the selection onto a stale trajectory.)
 - The stand-still action and the idea of an emergency-stop safety layer.
 - The discrete control set (Eq. 8) and the unicycle motion model (Eq. 7) the trajectories
   are built on.
