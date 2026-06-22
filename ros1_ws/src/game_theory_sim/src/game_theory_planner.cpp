@@ -66,7 +66,7 @@ std::pair<int, int> findNashEquilibrium(const std::vector<std::vector<double>>& 
     int cols = M1[0].size();
     std::vector<std::pair<int, int>> candidates;
 
-    // Step 1: Nash candidates (Def 2)
+    // Nash candidates
     for (int i = 0; i < rows; ++i) {
         for (int j = 0; j < cols; ++j) {
             // Find min in column j for A1
@@ -98,7 +98,7 @@ std::pair<int, int> findNashEquilibrium(const std::vector<std::vector<double>>& 
         return best;
     }
 
-    // Step 2: Pareto Filtering
+    // Pareto Filtering
     std::vector<bool> dominated(candidates.size(), false);
     for (size_t k = 0; k < candidates.size(); ++k) {
         if (dominated[k]) continue;
@@ -121,29 +121,24 @@ std::pair<int, int> findNashEquilibrium(const std::vector<std::vector<double>>& 
         if (!dominated[k]) pareto_set.push_back(candidates[k]);
     }
 
-    // Step 3: Random selection among Pareto-optimal
+    // Random selection among Pareto-optimal
     srand(time(NULL));
     int rand_idx = rand() % pareto_set.size();
     return pareto_set[rand_idx];
 }
 
-// Generazione mock delle traiettorie (Da espandere con la tua logica Unicycle RRT)
 void Agent::plan(Environment& env, int numPaths) {
     StrategySet.clear();
     
-    // In C++ puro, qui chiamerai multiTrajectoryRRT(). 
-    // Per brevità in questo esempio, generiamo una traiettoria dritta verso il goal
     Path direct_path;
     direct_path.push_back(Position);
     direct_path.push_back(Goal);
     StrategySet.push_back(direct_path);
     
-    // Aggiungi la PrevNashPath
     if (!PrevNashPath.empty()) {
         StrategySet.push_back(PrevNashPath);
     }
     
-    // Azione di default: Stand Still
     Path standStill = {Position, Position};
     StrategySet.push_back(standStill);
     StandStillCost = pathLength(direct_path) * 1.5; 

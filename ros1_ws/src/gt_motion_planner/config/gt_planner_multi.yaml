@@ -1,5 +1,5 @@
 # ============================================================================
-# Config MULTI-ROBOT (due turtlebot controllati, gioco congiunto - paper §4.3.3)
+# Config MULTI-ROBOT (due turtlebot controllati, gioco congiunto)
 # ============================================================================
 
 # Robot controllati. name = nome del model in /gazebo/model_states.
@@ -56,9 +56,7 @@ ws_min_y: -5.0
 ws_max_y: 5.0
 
 # ---- Ostacoli statici ----
-# NESSUNA conoscenza preventiva: l'algoritmo NON conosce gli ostacoli a priori.
-# Tutti (sia quelli del world sia quelli aggiunti a runtime) sono rilevati
-# ESCLUSIVAMENTE dal lidar (sezione sotto).
+# NESSUNA conoscenza preventiva
 static_obstacles: []
 obstacle_autodetect: false
 obstacle_default_radius: 0.40
@@ -75,10 +73,7 @@ ego_bubble: 0.35
 goal_block_penalty: 100.0
 hysteresis_weight: 2.5
 
-# ---- Freno di sicurezza (emergency stop, paper) ----
-# Se l'azione scelta porta a collisione imminente entro brake_lookahead s
-# (ostacolo statico/lidar o altro agente entro 2*agent_radius+brake_margin),
-# il robot si ferma invece di muoversi.
+# ---- Freno di sicurezza (emergency stop) ----
 safety_brake: true
 brake_lookahead: 0.8
 brake_margin: 0.12

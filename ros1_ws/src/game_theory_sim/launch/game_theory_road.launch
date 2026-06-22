@@ -1,7 +1,6 @@
 <launch>
   <arg name="model" default="$(env TURTLEBOT3_MODEL)"/>
 
-  <!-- Gazebo + mondo "strada" (2 robot in versi opposti, pedoni, lampioni) -->
   <include file="$(find gazebo_ros)/launch/empty_world.launch">
     <arg name="world_name" value="$(find game_theory_sim)/worlds/road.world"/>
     <arg name="paused" value="false"/>
@@ -9,11 +8,9 @@
     <arg name="gui" value="true"/>
   </include>
 
-  <!-- frame "world" per RViz (i markers del planner sono in frame mondo) -->
   <node pkg="tf2_ros" type="static_transform_publisher" name="world_frame"
         args="0 0 0 0 0 0 world map"/>
 
-  <!-- ===================== tb1 (sale, -Y -> +Y) ===================== -->
   <group ns="tb1">
     <param name="robot_description"
            command="$(find game_theory_sim)/scripts/gen_ns_urdf.sh $(arg model) tb1"/>
@@ -24,7 +21,6 @@
     </node>
   </group>
 
-  <!-- ===================== tb2 (scende, +Y -> -Y) ===================== -->
   <group ns="tb2">
     <param name="robot_description"
            command="$(find game_theory_sim)/scripts/gen_ns_urdf.sh $(arg model) tb2"/>

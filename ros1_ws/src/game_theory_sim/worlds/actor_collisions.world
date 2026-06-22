@@ -244,9 +244,7 @@
 </actor>
 
     <!-- ====================================================================
-         Ostacoli statici (X^obj). Devono combaciare con la lista
-         static_obstacles in gt_planner.yaml (il planner li evita nel
-         validity checker dell'RRT). Interni, lontani dai goal.
+         Ostacoli statici (X^obj)
          ==================================================================== -->
 
     <!-- Box centrale -->

@@ -1,6 +1,5 @@
 # ============================================================================
-# Game Theoretic Motion Planner  -  parametri (Turnwald & Wollherr 2019)
-# Colonna "virtual" di Table 2 (studio Motion Planning Among Humans, Sect. 6).
+# Game Theoretic Motion Planner
 # ============================================================================
 
 turtlebot_name: "turtlebot3_waffle_pi"
@@ -12,7 +11,7 @@ actor_names:
   - "actor_3_group_L"
   - "actor_4_group_R"
 
-# Coppie che camminano in gruppo: mai pianificare di passare in mezzo.
+# Coppie che camminano in gruppo.
 # Ogni coppia = [membro_sinistro, membro_destro].
 group_pairs:
   - ["actor_3_group_L", "actor_4_group_R"]
@@ -31,24 +30,23 @@ goals:
 loop_goals: true
 goal_tolerance: 0.30
 
-# Dimensione regione di goal X^goal (Table 2 virtual: 0.30 x 0.50 m).
+# Dimensione regione di goal X^goal.
 goal_region_x: 0.30
 goal_region_y: 0.50
 
 # ---- Interazione / collisioni ----
 interaction_radius: 5.0      # solo attori entro questo raggio entrano nel gioco
 agent_radius: 0.375          # R  (Table 2 virtual)
-collision_margin: 0.20       # margine extra sul vincolo Eq.2 (piu' alto = schiva prima)
+collision_margin: 0.20       # margine extra
 
 # ---- Tempistiche ----
-replan_dt: 0.10              # Delta t  (Table 2): periodo di replanning
-integrator_dt: 0.05          # dt       (Table 2): passo integratore numerico
+replan_dt: 0.10              # Delta t  : periodo di replanning
+integrator_dt: 0.05          # dt       : passo integratore numerico
 planning_horizon: 3.5        # finestra (s) di collisione dinamica + orizzonte
-                             # predizione attori (NON tronca piu' il path robot,
-                             # che ora e' full-to-goal). Piu' lungo = schiva prima.
+                             # predizione attori.
 control_rate: 10.0           # Hz del loop (= 1/replan_dt)
 
-# ---- RRT control-based (Sect. 4.3.1, set di controlli Eq.8) ----
+# ---- RRT control-based ----
 robot_v: 0.22                # v_n  velocita lineare (specifica agente; waffle ~0.22)
 w_min: 0.10                  # w_n^min  (rad/s)
 w_max: 0.55                  # w_n^max  (rad/s)
@@ -58,64 +56,43 @@ prop_min_lo: 0.35            # Gamma^min (estremo inf.)
 prop_min_hi: 0.65            # Gamma^min (estremo sup.)
 prop_max_lo: 0.75            # Gamma^max (estremo inf.)
 prop_max_hi: 1.25            # Gamma^max (estremo sup.)
-robot_num_actions: 16        # M_n  (Table 2: video=16, virtual=31). Abbassare per realtime.
+robot_num_actions: 16        # M_n
 rrt_solve_time: 0.06         # budget OMPL (s) per traiettoria. Full-to-goal:
-                             # alzare se goal lontani non vengono raggiunti
-                             # (path corto); abbassare per sim piu' veloce.
 
-# Limiti workspace per il sampling RRT (m). Devono contenere robot, goal e
-# traiettorie con margine: piu' larghi dei bound del mondo (+/-3.5) e dei
-# goal (+/-3), altrimenti uno stato di start fuori bound fa fallire l'RRT.
+# Limiti workspace per il sampling RRT (m).
 ws_min_x: -5.0
 ws_max_x: 5.0
 ws_min_y: -5.0
 ws_max_y: 5.0
 
 # ---- Ostacoli statici (X^obj) ----
-# DEVONO combaciare con i model statici in actor_collisions.world.
-# Il validity checker dell'RRT rifiuta gli stati dentro (ostacolo + agent_radius).
-#   box:      x,y centro, half_x,half_y semi-lati
-#   cylinder: x,y centro, radius
 static_obstacles:
   - {type: box,      x: 1.5,  y: 0.0,  half_x: 0.30, half_y: 0.30}
   - {type: box,      x: -1.5, y: 1.0,  half_x: 0.15, half_y: 1.00}
   - {type: cylinder, x: -1.0, y: -1.5, radius: 0.25}
   - {type: cylinder, x: 1.5,  y: -2.0, radius: 0.25}
 
-# Rileva a runtime anche ostacoli NON nel file (es. inseriti da Gazebo a mano):
-# qualunque model in /gazebo/model_states che non sia robot/attore/ground/sun
-# e non inizi per "obs_" viene trattato come cerchio di raggio default.
+# Autodetection degli ostacoli
 obstacle_autodetect: true
 obstacle_default_radius: 0.40
 
-# ---- Layer lidar (in AGGIUNTA agli oggetti) ----
-# Il robot evita anche i punti /scan reali: cattura la geometria vera (es.
-# spigoli di un parallelepipedo) che il cerchio dell'oggetto non copre.
-# I punti vicini agli attori vengono scartati (restano agenti dinamici).
+# ---- Layer lidar ----
 use_lidar: true
 scan_topic: "/scan"
 lidar_grid_res: 0.10            # risoluzione griglia di occupazione (m)
 lidar_inflation: 0.50          # gonfiaggio attorno a ogni punto (agent_radius+static_margin)
 lidar_actor_filter_radius: 0.60 # punti entro questo raggio da un attore = scartati
 
-# Margine di sicurezza statico (oggetti + lidar). Separato dal collision_margin
-# (dinamico) cosi' si puo' tarare senza intrappolare il robot.
+# Margine di sicurezza statico (oggetti + lidar)
 static_margin: 0.12
 
-# Ego-bubble: disco (m) attorno alla posa attuale dove gli ostacoli NON
-# bloccano. Garantisce start RRT valido e permette di uscire da spazi stretti
-# (evita il deadlock "no valid initial states"). Tienilo >~ agent_radius.
+# Ego-bubble
 ego_bubble: 0.35
 
-# Penalita' alla stima di distanza residua al goal se la retta end->goal
-# attraversa un ostacolo (evita che path corti puntati sull'ostacolo, con
-# stima Euclidea ottimistica, risultino economici e vengano scelti).
+# Penalita' per goal bloccato 
 goal_block_penalty: 100.0
 
-# Isteresi: penalizza il cambio di "lato"/omotopia rispetto alla traiettoria
-# scelta al tick precedente. Senza, l'RRT casuale fa scegliere a ogni tick il
-# lato piu' corto del momento -> zig-zag che non aggira l'ostacolo.
-# Piu' alto = piu' commit a un lato. Troppo alto = lento a correggere.
+# Isteresi: penalizza il cambio di "lato"
 hysteresis_weight: 3.5
 
 # ---- Predizione attori (umani) ----

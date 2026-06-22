@@ -1,24 +1,8 @@
 // ============================================================================
-//  Game Theoretic Motion Planner  -  Motion Planning Among Humans (Sect. 4.3.4)
-//
-//  Implementazione fedele a:
-//    Turnwald & Wollherr, "Human-Like Motion Planning Based on Game Theoretic
-//    Decision Making", Int J Soc Robotics (2019) 11:151-170.
-//
-//  Architettura disaccoppiata (Fig. 4), eseguita ogni Delta t:
-//    1. Generazione action set T_n con RRT control-based (OMPL)        [4.3.1]
-//    2. Costruzione del gioco statico:  J_n = Jhat + Jtilde            [4.1-4.3.2]
-//         - Jhat = Length(traiettoria)                                  (Eq. 9)
-//         - Jtilde = INF se collisione, 0 altrimenti                    (Eq. 4)
-//    3. Calcolo equilibri di Nash                                       (Def. 2)
-//    4. Filtro di Pareto                                                [4.2]
-//    5. Coordinamento "tra umani": selezione dell'equilibrio tramite
-//       osservazione delle traiettorie reali degli attori              [4.3.4]
-//    6. Memorizzazione di epsilon* per il loop successivo               [4.3.3]
-//
-//  Il robot (turtlebot) e' l'unico agente controllato. Gli attori si muovono
-//  da soli: il planner ne PREDICE i movimenti. Le coppie in gruppo vengono
-//  riconosciute e non si pianifica mai di passare in mezzo a loro.
+//  Game Theoretic Motion Planner
+//  Gioco congiunto (Nash/Pareto) su 1+ robot controllati. I pedoni sono rilevati
+//  dal lidar (cluster->tracking->predizione) e inseriti nel gioco come ostacoli
+//  dinamici. Pianificazione e controllo girano su thread separati.
 // ============================================================================
 
 #include <ros/ros.h>
@@ -88,7 +72,7 @@ struct Obstacle
   double r{0.0};
 };
 
-// Ostacolo dinamico rilevato dal lidar (NON noto a priori per nome): un pedone.
+// Ostacolo dinamico rilevato dal lidar: un pedone.
 // Stimati posizione e velocita' nel frame mondo dal tracking dei cluster lidar.
 struct DynObs
 {
@@ -106,23 +90,20 @@ struct Track
   int hits{0};               // associazioni consecutive
   int misses{0};             // frame consecutivi senza associazione
   bool matched{false};       // associata in questo frame
-  int dyn_latch{0};          // >0 => dinamica (latch: ponte sui cali di velocita')
-  bool ever_dynamic{false};  // una volta confermata dinamica, resta tale a vita
-                             // (un pedone non torna MAI a essere un muro statico)
-  // ancora per la stima di velocita' su finestra (riduce il rumore del
-  // centroide dovuto al movimento delle gambe / vista parziale)
-  double ax{0.0}, ay{0.0};
+  int dyn_latch{0};          // >0 => dinamica (ponte sui cali di velocita')
+  bool ever_dynamic{false};  // confermata dinamica una volta -> pedone a vita
+  double ax{0.0}, ay{0.0};   // ancora per la velocita' su finestra temporale
   ros::Time at;
   bool has_anchor{false};
 };
 
-// Un'azione = una traiettoria (Sect. 3) con la sua serie di controlli.
+// Un'azione = una traiettoria con la sua serie di controlli.
 struct Action
 {
   std::vector<State> trajectory;  // stati ricampionati a passo integrator_dt
-  double v_cmd{0.0};              // primo controllo lineare (Eq. 8)
+  double v_cmd{0.0};              // primo controllo lineare
   double w_cmd{0.0};              // primo controllo angolare
-  double cost{0.0};               // Jhat = Length  (Eq. 9)
+  double cost{0.0};               // Jhat = Length
   bool group_blocked{false};      // true se attraversa il corridoio di un gruppo
   bool obstacle_blocked{false};   // true se attraversa un ostacolo statico
   std::string name;
@@ -136,7 +117,7 @@ struct AgentActions
   std::vector<Action> actions;
 };
 
-// Un robot CONTROLLATO dal planner (agente controllabile, paper §4.3.3).
+// Un robot CONTROLLATO dal planner (agente controllabile).
 // Ogni robot ha: goal propri, publisher cmd, scan lidar, e stato di
 // pianificazione per-robot (ego/escape, isteresi, memorized).
 struct ControlledRobot
@@ -173,7 +154,7 @@ struct ControlledRobot
   int stuck_count{0};              // cicli consecutivi con azione scelta = INF
 };
 
-// Memoria di un equilibrio (per il ragionamento 4.3.4): per ciascun attore
+// Memoria di un equilibrio: per ciascun attore
 // la traiettoria che quell'equilibrio assumeva.
 struct EqRecord
 {
@@ -184,10 +165,7 @@ struct EqRecord
 };
 
 // ----------------------------------------------------------------------------
-//  Control sampler discreto (set di controlli Eq. 8)
-//    U_n = { (v,0), (v,w), (v,-w), (v,cw), (v,-cw) }
-//  con v fisso (specifico dell'agente), w estratto a caso in [w_min,w_max]
-//  prima di pianificare la traiettoria, c fattore di curvatura.
+//  Control sampler discreto
 // ----------------------------------------------------------------------------
 class Eq8ControlSampler : public oc::ControlSampler
 {
@@ -233,22 +211,11 @@ public:
 
     pnh.param<bool>("loop_goals", loop_goals_, true);
     pnh.param<double>("goal_tolerance", goal_tolerance_, 0.30);
-    // distanza centro-centro di collisione DURA (INF/stop) robot-pedone: solo
-    // contatto fisico reale. Passare di fianco piu' largo di questa NON ferma.
     pnh.param<double>("dyn_collision_dist", dyn_collision_dist_, 0.45);
-    // distanza di "comfort" robot-pedone: penalita' SOFT (non INF) per passaggi
-    // piu' stretti -> il bot preferisce passare largo, ma se non puo' continua a
-    // camminare invece di fermarsi.
     pnh.param<double>("ped_comfort_dist", ped_comfort_dist_, 0.75);
     pnh.param<double>("ped_comfort_weight", ped_comfort_weight_, 4.0);
-    // buffer tra due robot controllati. NON troppo grande: su strada stretta, se
-    // > spaziatura delle corsie, due robot testa-a-testa non riescono piu' ad
-    // aprire il gap (moto solo in avanti) e vanno in gridlock permanente.
     pnh.param<double>("robot_collision_dist", robot_collision_dist_, 0.55);
-    // cicli consecutivi in collisione (INF) prima di dichiarare gridlock ed entrare
-    // in escape per separarsi
     pnh.param<int>("dyn_stuck_limit", dyn_stuck_limit_, 6);
-    // smoothing del comando angolare pubblicato (anti-jitter pure-pursuit)
     pnh.param<double>("w_ema", w_ema_, 0.6);
     pnh.param<double>("goal_region_x", goal_region_x_, 0.30);
     pnh.param<double>("goal_region_y", goal_region_y_, 0.50);
@@ -262,14 +229,9 @@ public:
     pnh.param<double>("static_margin", static_margin_, 0.12);
     pnh.param<double>("lidar_inflation", lidar_inflation_, agent_radius_ + static_margin_);
     pnh.param<double>("lidar_actor_filter_radius", lidar_actor_filter_radius_, 0.60);
-    // raggio piu' stretto per filtrare SOLO il corpo degli ALTRI robot
-    // (footprint ~agent_radius). Mai applicato al proprio centro.
     pnh.param<double>("lidar_robot_filter_radius", lidar_robot_filter_radius_, 0.45);
 
     // ---- Tracker ostacoli DINAMICI dal lidar (pedoni, NON noti per nome) ----
-    // I punti lidar vengono raggruppati in cluster; i cluster sono tracciati nel
-    // tempo per stimarne la velocita'. I cluster fermi -> griglia statica; quelli
-    // in movimento -> ostacoli dinamici con traiettoria predetta (vel. costante).
     pnh.param<bool>("track_dynamic", track_dynamic_, true);
     pnh.param<double>("cluster_cell", cluster_cell_, 0.18);       // lato cella cluster
     pnh.param<int>("cluster_min_cells", cluster_min_cells_, 1);   // celle min per cluster
@@ -296,15 +258,9 @@ public:
     pnh.param<double>("hysteresis_weight", hysteresis_weight_, 2.5);
 
     // ---- Freno di sicurezza (paper: emergency stop) ----
-    // Se eseguire l'azione scelta porta a una collisione imminente entro
-    // brake_lookahead_ secondi (ostacolo statico/lidar o altro agente troppo
-    // vicino), il robot si ferma invece di muoversi.
     pnh.param<bool>("safety_brake", safety_brake_, true);
     pnh.param<double>("brake_lookahead", brake_lookahead_, 0.8);
     pnh.param<double>("brake_margin", brake_margin_, 0.12);
-    // semi-apertura del cono "davanti" per il freno su ostacoli statici [rad].
-    // Frena solo se l'ostacolo statico cade in questo cono attorno alla
-    // direzione di marcia (evita frenate passando di fianco).
     pnh.param<double>("brake_cone", brake_cone_, 1.05);  // ~60 gradi
 
     pnh.param<double>("interaction_radius", interaction_radius_, 5.0);
@@ -356,18 +312,12 @@ public:
                                &GameTheoryPlannerNode::ModelStatesCallback, this);
     marker_pub_ = nh_.advertise<visualization_msgs::MarkerArray>("gt_planner/markers", 1);
 
-    // Timer ONESHOT auto-riarmato: il ciclo successivo parte SOLO quando il
-    // precedente e' concluso (vedi TimerCallback). Cosi' i cicli non si
-    // accavallano mai e l'algoritmo si adatta alla velocita' del PC: se un
-    // ciclo e' lento, il prossimo aspetta semplicemente che finisca.
+    // Timer ONESHOT auto-riarmato
     timer_ = nh_.createTimer(ros::Duration(1.0 / control_rate_),
                              &GameTheoryPlannerNode::TimerCallback, this,
                              /*oneshot=*/true);
 
     // Controller DISACCOPPIATO ad alta frequenza: insegue la traiettoria
-    // pianificata (pure-pursuit) e pubblica cmd_vel a ritmo costante, anche
-    // mentre PlanCycle (lento) ricalcola su un altro thread. Cosi' il robot non
-    // resta MAI col vecchio comando "congelato" durante un ciclo lungo.
     control_timer_ = nh_.createTimer(ros::Duration(1.0 / control_pub_rate_),
                                      &GameTheoryPlannerNode::ControlPublish, this);
 
@@ -465,8 +415,7 @@ private:
   }
 
   // Costruisce la lista dei robot CONTROLLATI. Param "robots" (lista di struct
-  // {name, cmd_topic, scan_topic, goals, loop_goals}). In assenza, modalita'
-  // singolo robot retro-compatibile dai parametri legacy.
+  // {name, cmd_topic, scan_topic, goals, loop_goals}). 
   void SetupRobots(ros::NodeHandle &pnh)
   {
     XmlRpc::XmlRpcValue list;
@@ -574,10 +523,7 @@ private:
     ROS_INFO("[gt_planner] Ostacoli statici da file: %zu", base_obstacles_.size());
   }
 
-  // Ricostruisce la lista live degli ostacoli: quelli del file (forma esatta)
-  // + quelli rilevati a runtime da /gazebo/model_states (cerchi, raggio
-  // default). Qualunque model che non sia robot/attore/ground/sun e che non
-  // inizi per "obs_" (gia' nel file) viene trattato come ostacolo statico.
+  // Ricostruisce la lista live degli ostacoli
   void RefreshObstacles()
   {
     obstacles_ = base_obstacles_;
@@ -603,16 +549,14 @@ private:
     }
   }
 
-  // uno stato e' bloccato se dentro un oggetto modellato OPPURE vicino a un
-  // punto lidar (layer aggiuntivo che cattura la geometria reale, es. spigoli).
-  // blocco "crudo": dentro oggetto o vicino a punto lidar (senza ego-bubble)
+  // uno stato e' bloccato se dentro un oggetto modellato OPPURE vicino a un punto lidar 
   bool StateBlockedRaw(double x, double y) const
   {
     return InsideObstacle(x, y) || IsLidarOccupied(x, y);
   }
 
   // distanza dal punto (x,y) all'ostacolo piu' vicino (lidar + oggetti).
-  // Usata in escape-mode per allontanarsi (massimizzare clearance).
+  // Usata in escape-mode per allontanarsi.
   double Clearance(double x, double y) const
   {
     double m = 1e9;
@@ -629,8 +573,7 @@ private:
       else
         m = std::min(m, std::max(0.0, std::hypot(x - o.x, y - o.y) - o.r));
     }
-    // include anche gli altri agenti (robot/attori): in escape la fuga deve
-    // allontanarsi da TUTTO, non puntare verso l'altro robot (-> deadlock).
+    // include anche gli altri agenti (robot/attori)
     for (const auto &a : other_agents_)
       m = std::min(m, std::hypot(x - a.x, y - a.y));
     return m;
@@ -639,41 +582,13 @@ private:
   bool StateBlocked(double x, double y) const
   {
     // ego-bubble CONDIZIONALE: si attiva SOLO se il robot e' gia' dentro una
-    // zona bloccata (intrappolato, es. ostacolo comparso sopra di lui). In quel
-    // caso si scava un disco attorno alla posa attuale per garantire start RRT
-    // valido e permettere la fuga.
-    // In condizioni normali (robot libero) la bolla NON e' attiva: cosi' i path
-    // verso l'ostacolo restano invalidi e il robot mantiene lo standoff invece
-    // di poterci entrare (la bolla sempre-attiva scavava un buco nell'ostacolo
-    // e ci faceva entrare).
+    // zona bloccata (intrappolato, es. ostacolo comparso sopra di lui). 
     if (escape_mode_ && std::hypot(x - ego_x_, y - ego_y_) < ego_bubble_)
       return false;
     return StateBlockedRaw(x, y);
   }
 
-  // Freno di sicurezza (paper: emergency stop). Ritorna true se eseguire
-  // l'azione scelta `act` porta a una collisione imminente entro
-  // brake_lookahead_ secondi:
-  //   - un punto futuro passa troppo vicino a un altro agente (robot/pedone),
-  //     col centro entro 2*agent_radius + brake_margin (OMNIdirezionale: un
-  //     agente puo' venirci addosso da qualunque lato), oppure
-  //   - un punto futuro si avvicina a un ostacolo STATICO che e' DAVANTI al
-  //     robot (entro un cono attorno alla direzione di marcia) e a distanza
-  //     fisica < agent_radius + brake_margin. Il vincolo direzionale evita di
-  //     frenare quando si passa semplicemente DI FIANCO a un ostacolo.
-  // Per lo statico si usa la distanza FISICA al punto/ostacolo (non la griglia
-  // gonfiata di lidar_inflation, che e' un margine di pianificazione, non di
-  // collisione).
-  // others = posizioni CORRENTI degli altri agenti (snapshot).
-  // Freno di sicurezza SOLO STATICO (lampioni / punti lidar fermi / oggetti).
-  // L'evitamento dei pedoni NON e' qui: lo gestisce il gioco (le azioni che si
-  // scontrano con la traiettoria PREDETTA del pedone hanno costo INF, quindi il
-  // robot sceglie da solo un'azione che lo schiva; se non esiste, il dispatch
-  // pubblica STOP). Cosi' il robot si ferma SOLO quando nessun path evita il
-  // pedone, e non perche' il pedone e' semplicemente "vicino".
-  // Il freno statico e' direzionale: frena solo se l'ostacolo statico e'
-  // DAVANTI (cono attorno all'heading) e a distanza fisica < agent_radius +
-  // brake_margin -> non frena passando di fianco.
+  // Freno di sicurezza (paper: emergency stop)
   bool SafetyBrake(const Action &act) const
   {
     if (act.v_cmd <= 1e-6 && std::abs(act.w_cmd) <= 1e-6)
@@ -730,9 +645,7 @@ private:
     return false;
   }
 
-  // true se il segmento (a)->(b) attraversa un ostacolo. Usato per capire se la
-  // stima Euclidea della distanza residua al goal e' valida (LoS libera) o
-  // ottimistica (passa dentro un ostacolo).
+  // true se il segmento (a)->(b) attraversa un ostacolo
   bool SegmentBlocked(double ax, double ay, double bx, double by) const
   {
     const double d = std::hypot(bx - ax, by - ay);
@@ -746,10 +659,7 @@ private:
     return false;
   }
 
-  // costo = lunghezza percorsa + stima del completamento fino al goal.
-  // Se la retta end->goal e' ostruita, la stima Euclidea e' ottimistica:
-  // si penalizza, altrimenti i path corti puntati sull'ostacolo sembrano
-  // economici e vengono scelti (-> bot dritto contro l'ostacolo).
+  // costo = lunghezza percorsa + stima del completamento fino al goal
   double TrajectoryCost(const std::vector<State> &t) const
   {
     const double traveled = PathLength(t);
@@ -759,9 +669,6 @@ private:
       remaining += goal_block_penalty_;
 
     // corridoio strada: penalita' SOFT per ogni punto fuori dalla carreggiata
-    // [road_min_x, road_max_x]. Tiene i bot sulla strada (no "marciapiede"),
-    // ma resta finita: in caso di necessita' (schivare un pedone) possono
-    // uscire un attimo e rientrare, invece di andare in deadlock.
     double off = 0.0;
     if (road_keep_)
       for (const auto &p : t)
@@ -797,7 +704,6 @@ private:
   }
 
   // Inserisce nella griglia statica un disco di celle gonfiate (lidar_inflation)
-  // attorno al punto (px,py).
   void InsertInflated(double px, double py)
   {
     const int rc = std::max(0, static_cast<int>(std::ceil(lidar_inflation_ / lidar_grid_res_)));
@@ -819,14 +725,6 @@ private:
   // ============================================================
   //  Percezione lidar: cluster -> tracking -> classifica statico/dinamico
   // ============================================================
-  // Il robot NON conosce gli attori per nome. Unisce gli /scan di tutti i robot
-  // (in frame mondo via posa da model_states), scarta SOLO i punti sul corpo
-  // della propria flotta (raggio stretto, posa nota), poi:
-  //   1. raggruppa i punti rimasti in cluster (connected-components su griglia);
-  //   2. associa i cluster alle tracce dei frame precedenti e ne stima velocita';
-  //   3. cluster fermi  -> griglia di occupazione statica (lampioni, muri);
-  //   4. cluster mobili  -> ostacoli dinamici (pedoni) con velocita' stimata,
-  //      che il gioco usera' predicendone la traiettoria (vel. costante).
   void BuildPerception()
   {
     lidar_cells_.clear();
@@ -835,7 +733,7 @@ private:
     if (!use_lidar_)
       return;
 
-    // ---- 1. raccolta punti mondo (esclude SOLO i corpi della flotta) ----
+    // ---- raccolta punti mondo (esclude SOLO i corpi della flotta) ----
     std::vector<std::array<double, 2>> pts;
     pts.reserve(2048);
     for (size_t rbi = 0; rbi < robots_.size(); ++rbi)
@@ -882,7 +780,7 @@ private:
       return;
     }
 
-    // ---- 2. clustering: connected-components su griglia cluster_cell_ ----
+    // ---- clustering: connected-components su griglia cluster_cell_ ----
     const double cc = cluster_cell_;
     const long STR = 100000;  // stride per codificare (ccx,ccy) in una chiave
     auto key = [&](double x, double y) {
@@ -941,7 +839,7 @@ private:
       comps.push_back(std::move(c));
     }
 
-    // ---- 3. tracking: associa cluster<->tracce, stima velocita' ----
+    // ---- tracking: associa cluster<->tracce, stima velocita' ----
     ros::Time now = ros::Time::now();
     double dt = 0.0;
     if (have_perc_time_)
@@ -974,11 +872,8 @@ private:
       if (best >= 0)
       {
         Track &t = tracks_[best];
-        // velocita' stimata su FINESTRA temporale (~vel_window_ s): si confronta
-        // il centroide attuale con un'ancora vecchia di almeno vel_window_, non
-        // col frame precedente. Lo spostamento delle gambe (~qualche cm) diventa
-        // trascurabile rispetto allo spostamento reale su 0.5 s -> velocita'
-        // stabile e direzione corretta (no oscillazioni del path predetto).
+        // velocita' su finestra temporale (~vel_window_ s), non frame-frame:
+        // il movimento delle gambe non falsa piu' la stima
         if (!t.has_anchor)
         {
           t.ax = comps[ci].cx;
@@ -993,8 +888,7 @@ private:
           {
             double mvx = (comps[ci].cx - t.ax) / dtw;
             double mvy = (comps[ci].cy - t.ay) / dtw;
-            // scarta i glitch di associazione (salti di centroide -> velocita'
-            // impossibili per un pedone); altrimenti EMA leggera per smussare.
+            // scarta velocita' impossibili (glitch di associazione), poi EMA
             if (std::hypot(mvx, mvy) <= 1.5 * ped_max_speed_)
             {
               t.vx = 0.5 * t.vx + 0.5 * mvx;
@@ -1012,7 +906,6 @@ private:
         t.matched = true;
         comp_used[ci] = true;
         // latch dinamico: se confermata e in movimento, (ri)arma il latch.
-        // Un oggetto davvero fermo non arma mai il latch -> resta statico.
         if (t.hits >= track_min_hits_ &&
             std::hypot(t.vx, t.vy) >= dyn_speed_thresh_)
         {
@@ -1044,9 +937,7 @@ private:
                                  [&](const Track &t) { return t.misses > track_max_misses_; }),
                   tracks_.end());
 
-    // ---- 4. classifica e costruisci griglia statica + lista dinamici ----
-    // mappa: per ogni componente associata, quale traccia (per riusare la
-    // classificazione). Rifaccio l'associazione spaziale veloce.
+    // ---- classifica e costruisci griglia statica + lista dinamici ----
     for (size_t ci = 0; ci < comps.size(); ++ci)
     {
       // traccia piu' vicina (gia' aggiornata sopra)
@@ -1092,8 +983,7 @@ private:
   }
 
   // Traiettoria predetta di un pedone: moto rettilineo uniforme con la velocita'
-  // stimata, ricampionata a integrator_dt per num_traj_steps passi (stessa base
-  // temporale delle azioni robot, cosi' TrajectoriesCollide confronta per indice).
+  // stimata, ricampionata a integrator_dt per num_traj_steps passi.
   std::vector<Action> PredictDynObs(const DynObs &d) const
   {
     double sp = std::hypot(d.vx, d.vy);
@@ -1108,8 +998,7 @@ private:
     s.yaw = yaw;
     a.trajectory.push_back(s);
     // orizzonte di predizione PIU' LUNGO delle azioni robot: cosi' lo scontro
-    // frontale viene rilevato da lontano e il bot puo' deviare in anticipo,
-    // non all'ultimo momento (poi freno d'emergenza).
+    // frontale viene rilevato da lontano e il bot puo' deviare in anticipo.
     const int steps = std::max(1, static_cast<int>(
                                      std::round(ped_predict_horizon_ / integrator_dt_)));
     for (int k = 0; k < steps; ++k)
@@ -1153,8 +1042,7 @@ private:
     r.goal_x = r.goals[r.goal_idx].x;
     r.goal_y = r.goals[r.goal_idx].y;
     // nuovo goal: azzera il riferimento di isteresi del vecchio lato, cosi' il
-    // robot ridecide liberamente la direzione verso il nuovo goal (es. inversione
-    // a U) senza restare agganciato a quella precedente.
+    // robot ridecide liberamente la direzione verso il nuovo goal.
     r.have_prev = false;
     ROS_INFO("[gt_planner] [%s] nuovo goal %zu/%zu: %.2f %.2f",
              r.name.c_str(), r.goal_idx + 1, r.goals.size(), r.goal_x, r.goal_y);
@@ -1187,7 +1075,7 @@ private:
 
     ss_ = std::make_shared<oc::SimpleSetup>(cspace_);
 
-    // propagatore unicycle (Eq. 7) integrato a passo integrator_dt
+    // propagatore unicycle integrato a passo integrator_dt
     const double idt = integrator_dt_;
     ss_->setStatePropagator(
       [idt](const ob::State *from, const oc::Control *ctrl, const double dur, ob::State *to)
@@ -1216,7 +1104,6 @@ private:
       });
 
     // spazio ammissibile X^adm = workspace meno ostacoli statici X^obj
-    // (gli agenti dinamici sono gestiti dal gioco, cfr. Sect. 3).
     ss_->setStateValidityChecker(
       [this](const ob::State *s) -> bool {
         const auto *se2 = s->as<ob::SE2StateSpace::StateType>();
@@ -1256,7 +1143,6 @@ private:
       ss_->clear();
 
       // clamp dentro i bound: uno start/goal fuori bound fa fallire l'RRT
-      // ("no valid initial states").
       const double eps = 1e-3;
       const double sx = std::min(std::max(robot.x, ws_min_x_ + eps), ws_max_x_ - eps);
       const double sy = std::min(std::max(robot.y, ws_min_y_ + eps), ws_max_y_ - eps);
@@ -1308,27 +1194,12 @@ private:
         a.w_cmd = u[1];
       }
 
-      // Jhat = Length  (Eq. 9). Con orizzonte finito le traiettorie non
-      // raggiungono il goal, quindi si stima la lunghezza TOTALE del percorso
-      // fino alla regione di goal: tratto percorso + distanza residua (stima
-      // ammissibile del completamento in linea retta). Coincide con la
-      // lunghezza del paper quando la traiettoria arriva effettivamente al goal.
-      // Full-to-goal (paper §4.3.1): si tiene il path RRT COMPLETO (non
-      // troncato). Costo = lunghezza piena + distanza residua al goal: se la
-      // soluzione raggiunge la goal region remaining~0 e Jhat = Length (Eq.9
-      // esatta); se e' approssimata il termine residuo mantiene la direzione.
-      // La collisione dinamica con gli attori resta limitata alla prima
-      // finestra ~planning_horizon perche' le traiettorie predette degli
-      // attori sono lunghe solo num_traj_steps_ (confronto ad indici di tempo).
       a.cost = TrajectoryCost(a.trajectory);
 
       actions.push_back(a);
     }
 
-    // Azioni fallback deterministiche (set di controlli Eq.8), aggiunte SOLO se
-    // l'RRT non ha prodotto nessuna traiettoria: garantiscono movimento (evita
-    // n=2/stallo) senza competere coi path full-to-goal in condizioni normali
-    // (altrimenti gli archi corti, col costo ~lineare, vincerebbero sempre).
+    // Azioni fallback deterministiche, aggiunte SOLO se l'RRT non ha prodotto nessuna traiettoria
     if (actions.empty())
     {
       auto add_arc = [&](double v, double w, const std::string &nm) {
@@ -1355,16 +1226,8 @@ private:
     }
 
 
-    // NB: l'azione "memorizzata" (paper §4.3.3, ri-offrire la traiettoria scelta al
-    // tick precedente) e' stata RIMOSSA. Essendo identica al riferimento di isteresi
-    // (prev_robot_traj_), aveva penalita' di isteresi nulla e batteva sempre i path
-    // RRT freschi: restava selezionata congelata sul vecchio punto di partenza anche
-    // mentre il robot si muoveva (path verde fermo, movimento senza senso vicino al
-    // goal). La continuita' e' garantita dalla sola isteresi, che ora confronta i
-    // path RRT NUOVI (dalla posa attuale) con quello scelto al ciclo prima.
-
-    // azione "stand-still" tau^0 (Sect. 4.3.3): costo maggiore di ogni
-    // traiettoria ma molto minore del costo di collisione.
+    // NB: l'azione "memorizzata" (ri-offrire la traiettoria scelta al tick precedente) e' stata RIMOSSA.
+    // Sostituita con l'isteresi
     double max_cost = 0.0;
     for (const auto &a : actions)
       max_cost = std::max(max_cost, a.cost);
@@ -1382,10 +1245,7 @@ private:
     for (auto &a : actions)
       a.obstacle_blocked = TrajectoryHitsObstacle(a.trajectory);
 
-    // ESCAPE MODE: il robot e' dentro una zona bloccata -> obiettivo non e'
-    // raggiungere il goal ma ALLONTANARSI dall'ostacolo. Costo = -clearance
-    // dell'endpoint (piu' lontano = meglio). Cosi' non punta verso l'ostacolo
-    // e non resta fermo (stand_still ha clearance bassa -> costo alto).
+    // ESCAPE MODE: 
     if (escape_mode_)
       for (auto &a : actions)
         a.cost = -Clearance(a.trajectory.back().x, a.trajectory.back().y);
@@ -1458,9 +1318,7 @@ private:
         s = StepUnicycle(s, speed, turns[i], integrator_dt_);
         a.trajectory.push_back(s);
       }
-      // costo predizione: lunghezza + piccolo prior di rettilineita' (un umano
-      // tende a proseguire dritto; e' una prior di predizione, non il costo di
-      // gioco del robot che resta puramente Eq.9).
+      // costo predizione: lunghezza + piccolo prior di rettilineita'
       a.cost = PathLength(a.trajectory) + 0.5 * std::abs(turns[i]);
       actions.push_back(a);
     }
@@ -1468,7 +1326,7 @@ private:
   }
 
   // ============================================================
-  //  Vincoli: collisione (Eq. 2/4) e corridoio di gruppo
+  //  Vincoli: collisione e corridoio di gruppo
   // ============================================================
   bool TrajectoriesCollide(const std::vector<State> &a, const std::vector<State> &b,
                            double dmin) const
@@ -1480,9 +1338,7 @@ private:
     return false;
   }
 
-  // distanza minima centro-centro tra due traiettorie e l'ISTANTE (s) in cui
-  // avviene, confrontando per indice di tempo (a[i] vs b[i]). Serve a capire
-  // QUANDO il robot incrocerebbe il pedone (diagnostica).
+  // distanza minima centro-centro tra due traiettorie e l'ISTANTE (s) in cui avviene
   void ClosestApproach(const std::vector<State> &a, const std::vector<State> &b,
                        double &dmin, double &tmin) const
   {
@@ -1589,10 +1445,7 @@ private:
     {
       std::vector<bool> collided(agents.size(), false);
 
-      // J_tilde: collisione tra coppie di agenti (Eq. 2/4). Buffer piu' ampio tra
-      // due robot controllati (entrambi coordinati dal gioco): cosi' tengono piu'
-      // distanza e sopravvivono alla deriva di esecuzione del pure-pursuit, invece
-      // di sfiorarsi a 0.5 e finire a contatto.
+      // J_tilde: collisione tra coppie di agenti
       for (size_t i = 0; i < agents.size(); ++i)
         for (size_t j = i + 1; j < agents.size(); ++j)
         {
@@ -1617,10 +1470,7 @@ private:
           costs[r][i] = act.cost;        // J = Jhat = Length
       }
 
-      // Penalita' SOFT di comfort: un robot che sfiora un pedone (closest
-      // approach < ped_comfort_dist, ma senza contatto) paga un extra crescente
-      // -> preferisce passare piu' largo, ma NON e' INF, quindi se non puo' passa
-      // comunque (cammina) invece di fermarsi.
+      // Penalita' SOFT di comfort
       for (size_t i = 0; i < agents.size(); ++i)
       {
         if (!agents[i].is_robot || costs[r][i] >= 0.5 * kInf)
@@ -1709,9 +1559,7 @@ private:
   }
 
   // ============================================================
-  //  Coordinamento tra umani (Sect. 4.3.4)
-  //    - costruisce i record degli equilibri correnti
-  //    - sceglie epsilon* confrontando con le traiettorie OSSERVATE
+  //  Coordinamento tra umani
   // ============================================================
   std::vector<EqRecord> BuildEqRecords(const std::vector<size_t> &rows,
                                        const std::vector<AgentActions> &agents,
@@ -1733,7 +1581,6 @@ private:
   }
 
   // distanza tra due traiettorie come distanza tra i versori di direzione
-  // (allineamento all'origine: confronta la "forma"/heading, robusto all'avanzamento)
   static double DirDistance(const std::vector<State> &a, const std::vector<State> &b)
   {
     double ax, ay, bx, by;
@@ -1742,14 +1589,14 @@ private:
     return std::hypot(ax - bx, ay - by);
   }
 
-  // sceglie l'equilibrio epsilon* (ritorna la riga della tabella costi)
+  // sceglie l'equilibrio epsilon* 
   size_t SelectEquilibrium(const std::vector<EqRecord> &cur_eqs,
                            const std::vector<AgentActions> &agents)
   {
     if (cur_eqs.empty())
       return 0;
 
-    // direzioni osservate degli attori nell'ultimo Delta t  (T^obs)
+    // direzioni osservate degli attori nell'ultimo Delta t
     std::map<std::string, std::pair<double, double>> obs;
     for (size_t i = 1; i < agents.size(); ++i)
     {
@@ -1764,13 +1611,10 @@ private:
         obs[name] = {dx / n, dy / n};
     }
 
-    // fallback (t=0 oppure nessuna storia/osservazione utile):
-    // equilibrio Pareto-ottimo a costo robot minimo
+    // fallback  
     if (prev_eqs_.empty() || obs.empty())
       return LowestRobotCostRow(cur_eqs);
 
-    // (b) tra gli equilibri PRECEDENTI, quello piu' simile a cio' che gli
-    //     attori hanno realmente fatto (T^obs)
     const EqRecord *prev_best = nullptr;
     double best_obs_score = std::numeric_limits<double>::max();
     for (const auto &pe : prev_eqs_)
@@ -1800,7 +1644,7 @@ private:
     if (!prev_best)
       return LowestRobotCostRow(cur_eqs);
 
-    // (c) tra gli equilibri CORRENTI, quello piu' somigliante a prev_best
+    // tra gli equilibri CORRENTI, quello piu' somigliante a prev_best
     size_t best_row = cur_eqs.front().row;
     double best_res = std::numeric_limits<double>::max();
     double best_cost = std::numeric_limits<double>::max();
@@ -1818,7 +1662,7 @@ private:
       }
       if (cnt > 0)
         score /= cnt;
-      // + isteresi: preferisci il lato gia' scelto (evita lo zig-zag)
+      // + isteresi
       double total = score + HysteresisPenalty(ce.robot_traj);
       if (total < best_res - 1e-6 ||
           (std::abs(total - best_res) <= 1e-6 && ce.robot_cost < best_cost))
@@ -1831,13 +1675,7 @@ private:
     return best_row;
   }
 
-  // penalita' di isteresi: scoraggia il cambio di "lato"/omotopia rispetto alla
-  // traiettoria scelta al tick precedente. Senza, l'RRT casuale fa scegliere a
-  // ogni iterazione il lato piu' corto del momento -> cammino a zig-zag che non
-  // aggira l'ostacolo da nessun lato.
-  // direzione INIZIALE (~1s) della traiettoria: distingue il "lato" (sx/dx)
-  // della manovra di aggiramento, che il versore primo->ultimo NON cattura
-  // (entrambi i lati finiscono verso il goal -> stessa direzione globale).
+  // penalita' di isteresi 
   void EarlyDir(const std::vector<State> &t, double &dx, double &dy) const
   {
     dx = 0.0;
@@ -1907,9 +1745,6 @@ private:
   // ============================================================
   //  Controller ad alta frequenza (pure-pursuit della traiettoria)
   // ============================================================
-  // Gira su un thread separato (AsyncSpinner) a control_pub_rate Hz. Per ogni
-  // robot prende la posa CORRENTE (model_states) e insegue la traiettoria
-  // pianificata piu' recente: nessun "congelamento" mentre PlanCycle ricalcola.
   void ControlPublish(const ros::TimerEvent &)
   {
     gazebo_msgs::ModelStates msg;
@@ -1926,7 +1761,7 @@ private:
     std::string clog;
     for (auto &r : robots_)
     {
-      // snapshot del piano (sotto lock: PlanCycle scrive da un altro thread)
+      // snapshot del piano
       std::vector<State> path;
       bool stop, has_plan, final_reached;
       {
@@ -1940,17 +1775,14 @@ private:
       geometry_msgs::Twist cmd;  // default 0
       State cur;
       const bool have_pose = ExtractState(msg, r.name, cur);
-      // fermo totale entro goal_tolerance: niente strascico lento prima che il
-      // planner assegni il goal successivo (evita il "creep" verso il goal).
+      // fermo totale entro goal_tolerance
       const bool at_goal =
           have_pose && std::hypot(r.goal_x - cur.x, r.goal_y - cur.y) < goal_tolerance_;
       const bool moving =
           have_pose && !final_reached && !stop && !at_goal && has_plan && path.size() > 1;
       if (moving)
         cmd = PurePursuit(cur, path, r.goal_x, r.goal_y);
-      // smoothing del comando angolare: i path RRT sono frastagliati e il pure-
-      // pursuit dava w a scatti (+0.23/-0.15 ogni ciclo) -> il bot sbandava e
-      // usciva dal path pianificato finendo in collisione. EMA -> sterzata fluida.
+      // smoothing del comando angolare
       double w_smooth = moving ? (w_ema_ * r.last_w_pub + (1.0 - w_ema_) * cmd.angular.z) : 0.0;
       cmd.angular.z = w_smooth;
       r.last_w_pub = w_smooth;
@@ -1969,9 +1801,6 @@ private:
       ROS_INFO_THROTTLE(0.5, "[gt_planner][ctrl] %s", clog.c_str());
   }
 
-  // pure-pursuit unicycle: trova un punto sulla traiettoria a ~lookahead davanti
-  // e sterza verso di esso; v costante (ridotta in curva stretta / vicino al
-  // goal). Robusto al fatto che il robot avanza tra una pianificazione e l'altra.
   geometry_msgs::Twist PurePursuit(const State &cur, const std::vector<State> &path,
                                    double gx, double gy) const
   {
@@ -2005,11 +1834,7 @@ private:
     const double dgoal = std::hypot(gx - cur.x, gy - cur.y);
     if (dgoal < lookahead_)
       v *= std::max(0.2, dgoal / lookahead_);
-    // rallentamento in curva DOLCE: prima era v*=0.3 per |alpha|>1.2, che faceva
-    // strisciare il bot a ~0.07 m/s in ogni schivata/inversione -> non faceva in
-    // tempo a togliersi e dopo il goal restava "incontrollato" nell'inversione a
-    // U. Ora scala con l'angolo ma con pavimento 0.55: continua ad avanzare
-    // mentre gira.
+    // rallentamento in curva DOLCE 
     {
       double turn_scale = 1.0 - 0.5 * (std::abs(alpha) / M_PI);  // alpha=pi -> 0.5
       v *= std::max(0.55, turn_scale);
@@ -2178,9 +2003,7 @@ private:
     marker_pub_.publish(arr);
   }
 
-  // Richiede lo stop di tutti i robot: imposta follow_stop, e' il controller ad
-  // alta frequenza (unico publisher di cmd_vel) a mandare 0. Cosi' non ci sono
-  // due thread che scrivono su cmd_vel.
+  // Richiede lo stop di tutti i robot 
   void PublishStop()
   {
     std::lock_guard<std::mutex> lk(plan_mutex_);
@@ -2188,9 +2011,7 @@ private:
       r.follow_stop = true;
   }
 
-  // selezione congiunta dell'equilibrio (paper §4.3.3, tutti controllabili):
-  // tra gli equilibri candidati (Pareto o Nash) sceglie quello che minimizza la
-  // somma dei costi dei robot controllati + penalita' di isteresi per-robot.
+  // selezione dell'equilibrio (Pareto o Nash)
   size_t SelectJoint(const std::vector<EqRecord> &cur_eqs,
                      const std::vector<AgentActions> &agents,
                      const std::vector<std::vector<int>> &alloc,
@@ -2225,12 +2046,8 @@ private:
   }
 
   // ============================================================
-  //  Loop principale (ogni Delta t)
+  //  Loop principale
   // ============================================================
-  // Wrapper del timer ONESHOT: esegue un ciclo completo e SOLO al termine
-  // ri-arma il timer per il ciclo successivo. Garantisce che le callback non
-  // si accavallino mai (single-thread) e che ogni ciclo venga portato a
-  // termine; la cadenza si adatta da sola alla velocita' del PC.
   void TimerCallback(const ros::TimerEvent &)
   {
     PlanCycle();
@@ -2241,8 +2058,7 @@ private:
 
   void PlanCycle()
   {
-    // snapshot dei model_states (la callback scrive da un altro thread): tutto
-    // il resto del ciclo lavora su work_msg_, senza tenere il lock a lungo.
+    // snapshot dei model_states
     {
       std::lock_guard<std::mutex> lk(state_mutex_);
       if (!have_model_states_)
@@ -2265,8 +2081,7 @@ private:
       return;
     }
 
-    // Percezione: cluster lidar -> tracking -> griglia statica + ostacoli
-    // dinamici (pedoni) con velocita' stimata. Nessuna conoscenza per nome.
+    // Percezione
     BuildPerception();
     RefreshObstacles();
 
@@ -2291,7 +2106,7 @@ private:
                         dyn_obs_.size(), tracks_.size(), pl.c_str());
     }
 
-    // ---- 1. per ogni robot: avanza goal + genera action set (context swap) ----
+    // ---- per ogni robot: avanza goal + genera action set (context swap) ----
     std::vector<AgentActions> agents;
     std::vector<size_t> agent_robot_idx;
 
@@ -2308,16 +2123,12 @@ private:
         AdvanceGoal(r);
       }
 
-      // carica il contesto di pianificazione del robot nei membri usati da
-      // GenerateRobotActions / StateBlocked / cost
+      // carica il contesto di pianificazione del robot
       goal_x_ = r.goal_x;
       goal_y_ = r.goal_y;
       ego_x_ = r.state.x;
       ego_y_ = r.state.y;
-      // escape: o il robot e' dentro una zona bloccata (statico), OPPURE e'
-      // bloccato in gridlock dinamico (azione scelta = INF per troppi cicli di
-      // fila, es. due robot testa-a-testa). In gridlock l'obiettivo diventa
-      // separarsi (max clearance), rompendo lo stallo simmetrico.
+      // escape 
       escape_mode_ = StateBlockedRaw(r.state.x, r.state.y) ||
                      (r.stuck_count > dyn_stuck_limit_);
       r.escape = escape_mode_;
@@ -2350,13 +2161,10 @@ private:
       PublishStop();
       return;
     }
-    // i primi n_controlled agenti sono i robot; i pedoni vengono dopo
+    // i primi n_controlled agenti sono i robot
     const size_t n_controlled = agents.size();
 
-    // pedoni rilevati: agenti NON controllati con UNA sola azione (traiettoria
-    // predetta a vel. costante). Una sola azione -> non gonfia lo spazio
-    // congiunto, ma entra in TrajectoriesCollide e rende INF le azioni robot che
-    // gli vanno addosso.
+    // pedoni rilevati 
     for (size_t di = 0; di < dyn_obs_.size(); ++di)
     {
       AgentActions pa;
@@ -2367,7 +2175,7 @@ private:
       agents.push_back(pa);
     }
 
-    // ---- 2-4. gioco congiunto: costi, Nash, Pareto ----
+    // ---- gioco congiunto: costi, Nash, Pareto ----
     auto alloc = EnumerateAllocations(agents);
     auto costs = BuildCostTable(agents, alloc);
     auto nash = FindNash(agents, alloc, costs);
@@ -2387,7 +2195,7 @@ private:
       valid = true;
     }
 
-    // ---- 6. dispatch comandi + memorizzazione per-robot ----
+    // ---- dispatch comandi + memorizzazione per-robot ----
     if (valid)
     {
       for (size_t ai = 0; ai < n_controlled; ++ai)
@@ -2395,11 +2203,8 @@ private:
         auto &r = robots_[agent_robot_idx[ai]];
         const Action &act = agents[ai].actions[alloc[selected_row][ai]];
 
-        // L'azione scelta si scontra (con un pedone o l'altro robot) se il suo
-        // costo nel gioco e' INF: significa che NESSUN path evitava la
-        // collisione -> ci si ferma e si lascia passare. Se invece il costo e'
-        // finito, l'azione e' gia' una che schiva (o non rischia) -> si procede.
-        const bool collides = costs[selected_row][ai] >= 0.5 * kInf;
+        // L'azione scelta si scontra se il suo costo nel gioco e' INF
+	const bool collides = costs[selected_row][ai] >= 0.5 * kInf;
 
         bool stop_flag = false;
         if (!r.final_reached)
@@ -2411,19 +2216,15 @@ private:
         }
         r.braked = stop_flag;
 
-        // conteggio gridlock: l'azione scelta in collisione (INF) incrementa lo
-        // stuck; quando supera la soglia il robot entra in escape (vedi sopra) per
-        // separarsi. Durante l'escape lo stuck decade piano cosi' la separazione
-        // dura abbastanza; libero in condizioni normali -> reset.
-        if (collides)
+        // conteggio gridlock 
+	if (collides)
           ++r.stuck_count;
         else if (!r.escape)
           r.stuck_count = 0;
         else if (r.stuck_count > 0)
           --r.stuck_count;
 
-        // NON si pubblica qui: il piano viene consegnato al controller ad alta
-        // frequenza (ControlPublish), che insegue la traiettoria in continuo.
+        // il piano viene consegnato al controller ad alta frequenza (ControlPublish)
         {
           std::lock_guard<std::mutex> lk(plan_mutex_);
           r.follow_path = act.trajectory;
@@ -2643,8 +2444,6 @@ int main(int argc, char **argv)
 {
   ros::init(argc, argv, "gt_planner_node");
   GameTheoryPlannerNode node;
-  // 2+ thread: la pianificazione (lenta) e il controller ad alta frequenza +
-  // le callback dei sensori girano in parallelo -> il robot non si "congela".
   ros::AsyncSpinner spinner(3);
   spinner.start();
   ros::waitForShutdown();

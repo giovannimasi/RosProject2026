@@ -1,5 +1,4 @@
 <launch>
-  <!-- Avvia rviz per visualizzare le traiettorie valutate / scelte? -->
   <arg name="rviz" default="true"/>
 
   <node pkg="gt_motion_planner"

@@ -4,23 +4,15 @@
   <arg name="y_pos" default="0.0"/>
   <arg name="z_pos" default="0.0"/>
 
-  <!-- 1. Avvia Gazebo caricando il mondo con il pedone animato -->
   <include file="$(find gazebo_ros)/launch/empty_world.launch">
-    <!-- Punta al file world che hai appena creato -->
     <arg name="world_name" value="$(find game_theory_sim)/worlds/actor_collisions.world"/>
     <arg name="paused" value="false"/>
     <arg name="use_sim_time" value="true"/>
     <arg name="gui" value="true"/>
   </include>
 
-  <!-- 2. Carica la descrizione del Turtlebot -->
   <param name="robot_description" command="$(find xacro)/xacro --inorder $(find turtlebot3_description)/urdf/turtlebot3_$(arg model).urdf.xacro" />
-  
-  <!-- 3. Spawna il Turtlebot3 nel mondo -->
   <node pkg="gazebo_ros" type="spawn_model" name="spawn_urdf" args="-urdf -model turtlebot3_$(arg model) -x $(arg x_pos) -y $(arg y_pos) -z $(arg z_pos) -param robot_description" />
-
-  <!-- 4. Pubblica il TF tree (odom->base_footprint->base_link->base_scan ...) -->
-  <!--    Senza questo RViz non trova base_scan (lidar) ne' il RobotModel.    -->
   <node pkg="robot_state_publisher" type="robot_state_publisher" name="robot_state_publisher" output="screen">
     <param name="publish_frequency" value="50.0"/>
   </node>

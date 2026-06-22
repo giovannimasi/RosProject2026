@@ -1,7 +1,5 @@
 # ============================================================================
-# Config STRADA: 2 turtlebot in versi opposti + pedoni rilevati dal lidar.
-# Il robot NON conosce gli attori per nome: li rileva, traccia e predice
-# tramite il tracker dinamico lidar (cluster -> tracking -> classifica).
+# Config STRADA: 2 turtlebot in versi opposti + pedoni rilevati dal lidar
 # ============================================================================
 
 robots:
@@ -32,9 +30,6 @@ goal_region_y: 0.50
 interaction_radius: 6.0
 agent_radius: 0.375
 collision_margin: 0.20
-# distanza centro-centro di collisione tra agenti dinamici (robot/pedoni).
-# Ingombro fisico reale (~waffle 0.22 + pedone 0.25 + margine). Piu' piccolo di
-# 2*agent_radius: cosi' su strada stretta il bot passa di fianco senza fermarsi.
 dyn_collision_dist: 0.45     # contatto fisico robot-pedone (INF/stop solo qui)
 ped_comfort_dist: 0.75       # sotto questa distanza: penalita' soft (passa largo, non si ferma)
 ped_comfort_weight: 4.0
@@ -43,19 +38,12 @@ dyn_stuck_limit: 6           # cicli in collisione prima di escape anti-gridlock
 w_ema: 0.6                   # smoothing sterzata pubblicata (anti-jitter)
 
 # ---- Tempistiche ----
-# Timer ONESHOT auto-riarmato: ogni ciclo viene SEMPRE portato a termine e il
-# successivo parte solo dopo. control_rate qui = 1/intervallo tra la FINE di un
-# ciclo e l'inizio del prossimo (anche finestra per aggiornare scan/model_states).
-# La cadenza reale si auto-limita al tempo di calcolo: se il PC e' lento, i cicli
-# diventano semplicemente piu' radi, MAI accavallati o troncati.
 replan_dt: 0.10
 integrator_dt: 0.08          # passo piu' grosso = meno punti per traiettoria
 planning_horizon: 4.0
 control_rate: 5.0
 
-# Controller DISACCOPPIATO: insegue la traiettoria pianificata a ritmo costante
-# (su un thread separato) -> niente "congelamento" mentre la pianificazione e'
-# lenta. control_pub_rate = Hz di pubblicazione cmd_vel; lookahead = pure-pursuit.
+# Controller DISACCOPPIATO
 control_pub_rate: 15.0
 lookahead: 0.45
 
@@ -68,7 +56,7 @@ prop_min_lo: 0.35
 prop_min_hi: 0.65
 prop_max_lo: 0.75
 prop_max_hi: 1.25
-robot_num_actions: 6         # N solve RRT full-to-goal per robot/ciclo: meno = piu' veloce
+robot_num_actions: 6         # N solve RRT full-to-goal per robot/ciclo
 rrt_solve_time: 0.035
 
 # strada stretta lungo Y: workspace lungo e sottile
